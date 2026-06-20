@@ -1,8 +1,12 @@
+```python
 import streamlit as st
 import faiss
 import pickle
 import numpy as np
+import pandas as pd
+import re
 
+from collections import Counter
 from sentence_transformers import SentenceTransformer
 from google import genai
 
@@ -17,7 +21,7 @@ st.set_page_config(
 )
 
 # =====================================
-# GEMINI CLIENT
+# GEMINI
 # =====================================
 
 client = genai.Client(
@@ -25,170 +29,221 @@ client = genai.Client(
 )
 
 # =====================================
-# LOAD EMBEDDING MODEL
+# LOAD MODELS
 # =====================================
 
 embedding_model = SentenceTransformer(
     "all-MiniLM-L6-v2"
 )
 
-# =====================================
-# LOAD FAISS INDEX
-# =====================================
-
 index = faiss.read_index(
     "financialIndex.faiss"
 )
-
-# =====================================
-# LOAD CHUNKS
-# =====================================
 
 with open(
     "companyChunks.pkl",
     "rb"
 ) as f:
-
     chunks = pickle.load(f)
 
 # =====================================
-# UI
+# HEADER
 # =====================================
 
 st.title("📈 Financial Research Agent")
-
-st.caption(
-    f"Knowledge Base: {len(chunks)} financial chunks"
+st.markdown(
+    "Analyze NVIDIA, Microsoft and Reliance annual reports using Retrieval-Augmented Generation (RAG)."
 )
+
+# KPI CARDS
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("Companies", "3")
+
+with col2:
+    st.metric("Knowledge Chunks", len(chunks))
+
+with col3:
+    st.metric("Model", "Gemini 2.5")
+
+st.divider()
+
+# =====================================
+# INPUT
+# =====================================
 
 query = st.text_input(
     "Ask a financial question"
 )
 
 # =====================================
-# SEARCH + RAG
+# MAIN PIPELINE
 # =====================================
 
 if query:
 
     try:
 
-        # --------------------------
-        # Embed query
-        # --------------------------
+        with st.spinner("Analyzing reports..."):
 
-        query_vector = embedding_model.encode(
-            [query]
-        )
-
-        # --------------------------
-        # Retrieve top 20 chunks
-        # --------------------------
-
-        D, I = index.search(
-            np.array(query_vector).astype(
-                "float32"
-            ),
-            20
-        )
-
-        valid_chunks = []
-
-        for idx in I[0]:
-
-            idx = int(idx)
-
-            if 0 <= idx < len(chunks):
-
-                chunk = chunks[idx]
-
-                if isinstance(chunk, dict):
-
-                    company = chunk.get(
-                        "company",
-                        "Unknown"
-                    )
-
-                    text = chunk.get(
-                        "text",
-                        ""
-                    )
-
-                    valid_chunks.append(
-                        f"Company: {company}\n{text}"
-                    )
-
-                else:
-
-                    valid_chunks.append(
-                        str(chunk)
-                    )
-
-        if len(valid_chunks) == 0:
-
-            st.error(
-                "No relevant information found."
+            query_vector = embedding_model.encode(
+                [query]
             )
 
-            st.stop()
+            D, I = index.search(
+                np.array(query_vector).astype(
+                    "float32"
+                ),
+                20
+            )
 
-        # --------------------------
-        # Build context
-        # --------------------------
+            valid_chunks = []
+            companies_used = set()
 
-        context = "\n\n".join(
-            valid_chunks
-        )
+            for idx in I[0]:
 
-        # --------------------------
-        # Better Prompt
-        # --------------------------
+                idx = int(idx)
 
-        prompt = f"""
-You are a professional financial analyst.
+                if 0 <= idx < len(chunks):
 
-Use ONLY the information provided in the context.
+                    chunk = chunks[idx]
 
-Instructions:
-- Answer in detail.
-- Mention important financial figures.
-- Compare companies if requested.
-- Explain the answer clearly.
-- Do not invent facts.
+                    if isinstance(chunk, dict):
 
-If the answer is not available in the context,
-say:
+                        company = chunk.get(
+                            "company",
+                            "Unknown"
+                        )
 
-"I could not find that information in the reports."
+                        text = chunk.get(
+                            "text",
+                            ""
+                        )
 
-CONTEXT:
+                        companies_used.add(
+                            company
+                        )
+
+                        valid_chunks.append(
+                            f"Company: {company}\n{text}"
+                        )
+
+                    else:
+
+                        valid_chunks.append(
+                            str(chunk)
+                        )
+
+            if len(valid_chunks) == 0:
+
+                st.error(
+                    "No relevant information found."
+                )
+
+                st.stop()
+
+            context = "\n\n".join(
+                valid_chunks
+            )
+
+            prompt = f"""
+You are a senior equity research analyst.
+
+Use the provided context as your primary source.
+
+Tasks:
+1. Answer the question directly.
+2. Explain your reasoning.
+3. Highlight important financial figures.
+4. Compare companies if relevant.
+5. Discuss opportunities and risks.
+6. If information is incomplete, clearly state what is missing.
+
+Context:
 {context}
 
-QUESTION:
+Question:
 {query}
 """
 
-        # --------------------------
-        # Gemini Response
-        # --------------------------
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
+        # =====================================
+        # ANSWER
+        # =====================================
 
-        # --------------------------
-        # Display Answer
-        # --------------------------
+        st.subheader("📊 Financial Analysis")
 
-        st.subheader("Answer")
-
-        st.write(
+        st.success(
             response.text
         )
+
+        # =====================================
+        # SOURCES
+        # =====================================
+
+        st.subheader("📚 Companies Referenced")
+
+        st.write(
+            " • ".join(
+                sorted(companies_used)
+            )
+        )
+
+        # =====================================
+        # THEMES CHART
+        # =====================================
+
+        words = re.findall(
+            r"\b[a-zA-Z]{4,}\b",
+            context.lower()
+        )
+
+        stopwords = {
+            "company","revenue","income","would",
+            "could","their","there","which",
+            "these","those","about","after",
+            "before","other","using","from",
+            "have","been","were","with"
+        }
+
+        words = [
+            w for w in words
+            if w not in stopwords
+        ]
+
+        top_words = Counter(
+            words
+        ).most_common(10)
+
+        if len(top_words) > 0:
+
+            df = pd.DataFrame(
+                top_words,
+                columns=[
+                    "Keyword",
+                    "Frequency"
+                ]
+            )
+
+            st.subheader(
+                "📈 Key Financial Themes"
+            )
+
+            st.bar_chart(
+                df.set_index(
+                    "Keyword"
+                )
+            )
 
     except Exception as e:
 
         st.error(
             f"Error: {str(e)}"
         )
+```
