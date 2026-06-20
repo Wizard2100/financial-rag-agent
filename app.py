@@ -1,10 +1,9 @@
-
 import streamlit as st
 import faiss
 import pickle
 import numpy as np
 import pandas as pd
-import re
+import json
 
 from collections import Counter
 from sentence_transformers import SentenceTransformer
@@ -32,41 +31,78 @@ client = genai.Client(
 # LOAD MODELS
 # =====================================
 
-embedding_model = SentenceTransformer(
-    "all-MiniLM-L6-v2"
-)
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer(
+        "all-MiniLM-L6-v2"
+    )
 
-index = faiss.read_index(
-    "financialIndex.faiss"
-)
+embedding_model = load_embedding_model()
 
-with open(
-    "companyChunks.pkl",
-    "rb"
-) as f:
-    chunks = pickle.load(f)
+# =====================================
+# LOAD FAISS
+# =====================================
+
+@st.cache_resource
+def load_faiss():
+    return faiss.read_index(
+        "financialIndex.faiss"
+    )
+
+index = load_faiss()
+
+# =====================================
+# LOAD CHUNKS
+# =====================================
+
+@st.cache_data
+def load_chunks():
+    with open(
+        "companyChunks.pkl",
+        "rb"
+    ) as f:
+        return pickle.load(f)
+
+chunks = load_chunks()
 
 # =====================================
 # HEADER
 # =====================================
 
 st.title("📈 Financial Research Agent")
-st.markdown(
-    "Analyze NVIDIA, Microsoft and Reliance annual reports using Retrieval-Augmented Generation (RAG)."
-)
 
+st.markdown("""
+Analyze annual reports using:
+
+- FAISS Vector Search
+- Sentence Transformers
+- Gemini 2.5 Flash
+- Retrieval Augmented Generation (RAG)
+""")
+
+# =====================================
 # KPI CARDS
+# =====================================
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.metric("Companies", "3")
+    st.metric(
+        "Companies",
+        "3"
+    )
 
 with col2:
-    st.metric("Knowledge Chunks", len(chunks))
+    st.metric(
+        "Knowledge Chunks",
+        len(chunks)
+    )
 
 with col3:
-    st.metric("Model", "Gemini 2.5")
+    st.metric(
+        "Model",
+        "Gemini 2.5"
+    )
 
 st.divider()
 
@@ -86,39 +122,51 @@ if query:
 
     try:
 
-        with st.spinner("Analyzing reports..."):
+        with st.spinner(
+            "Analyzing reports..."
+        ):
+
+            # ==========================
+            # EMBEDDING
+            # ==========================
 
             query_vector = embedding_model.encode(
                 [query]
             )
 
+            # ==========================
+            # RETRIEVAL
+            # ==========================
+
             D, I = index.search(
-                np.array(query_vector).astype(
+                np.array(
+                    query_vector
+                ).astype(
                     "float32"
                 ),
-                50
+                20
             )
-            st.subheader("Similarity Scores")
-
-            scores_df = pd.DataFrame({
-                "Chunk Index": I[0],
-                "Similarity Score": D[0]
-            })
-
-            st.dataframe(scores_df)
 
             valid_chunks = []
-            companies_used = set()
+            companies_used = []
+            company_counter = Counter()
 
             for idx in I[0]:
 
                 idx = int(idx)
 
-                if 0 <= idx < len(chunks):
+                if (
+                    idx >= 0
+                    and
+                    idx < len(chunks)
+                ):
 
                     chunk = chunks[idx]
 
-                    if isinstance(chunk, dict):
+                    if isinstance(
+                        chunk,
+                        dict
+                    ):
 
                         company = chunk.get(
                             "company",
@@ -130,7 +178,11 @@ if query:
                             ""
                         )
 
-                        companies_used.add(
+                        company_counter[
+                            company
+                        ] += 1
+
+                        companies_used.append(
                             company
                         )
 
@@ -147,7 +199,7 @@ if query:
             if len(valid_chunks) == 0:
 
                 st.error(
-                    "No relevant information found."
+                    "No relevant chunks found."
                 )
 
                 st.stop()
@@ -156,27 +208,38 @@ if query:
                 valid_chunks
             )
 
+            # ==========================
+            # PROMPT
+            # ==========================
+
             prompt = f"""
 You are a senior equity research analyst.
 
-Carefully analyze ALL retrieved context before answering.
+Analyze the retrieved annual reports.
 
-Rules:
-- Use information from multiple chunks whenever possible.
-- Perform comparisons if the question asks for them.
-- Extract numerical values and financial metrics.
-- Explain your reasoning.
-- Summarize findings in bullet points.
-- Give a final conclusion.
+Requirements:
 
-If the answer is partially available, provide the available information instead of saying you cannot find it.
+1. Answer directly.
+2. Explain reasoning.
+3. Compare companies whenever relevant.
+4. Mention financial metrics.
+5. Highlight risks.
+6. Highlight opportunities.
+7. Use bullet points.
+8. End with a conclusion.
 
 CONTEXT:
+
 {context}
 
 QUESTION:
+
 {query}
 """
+
+            # ==========================
+            # GEMINI ANSWER
+            # ==========================
 
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -187,73 +250,104 @@ QUESTION:
         # ANSWER
         # =====================================
 
-        st.subheader("📊 Financial Analysis")
+        st.subheader(
+            "📊 Financial Analysis"
+        )
 
         st.success(
             response.text
         )
 
         # =====================================
-        # SOURCES
+        # COMPANY DISTRIBUTION
         # =====================================
 
-        st.subheader("📚 Companies Referenced")
-
-        st.write(
-            " • ".join(
-                sorted(companies_used)
-            )
-        )
-
-        # =====================================
-        # THEMES CHART
-        # =====================================
-
-        words = re.findall(
-            r"\b[a-zA-Z]{4,}\b",
-            context.lower()
-        )
-
-        stopwords = {
-            "company","revenue","income","would",
-            "could","their","there","which",
-            "these","those","about","after",
-            "before","other","using","from",
-            "have","been","were","with"
-        }
-
-        words = [
-            w for w in words
-            if w not in stopwords
-        ]
-
-        top_words = Counter(
-            words
-        ).most_common(10)
-
-        if len(top_words) > 0:
-
-            df = pd.DataFrame(
-                top_words,
-                columns=[
-                    "Keyword",
-                    "Frequency"
-                ]
-            )
+        if len(company_counter) > 0:
 
             st.subheader(
-                "📈 Key Financial Themes"
+                "🏢 Retrieved Company Distribution"
+            )
+
+            company_df = pd.DataFrame(
+                {
+                    "Company":
+                        list(
+                            company_counter.keys()
+                        ),
+                    "Chunks":
+                        list(
+                            company_counter.values()
+                        )
+                }
             )
 
             st.bar_chart(
-                df.set_index(
-                    "Keyword"
+                company_df.set_index(
+                    "Company"
                 )
             )
+
+        # =====================================
+        # COMPANIES REFERENCED
+        # =====================================
+
+        st.subheader(
+            "📚 Companies Referenced"
+        )
+
+        st.write(
+            " • ".join(
+                sorted(
+                    set(
+                        companies_used
+                    )
+                )
+            )
+        )
+
+        # =====================================
+        # RETRIEVAL DETAILS
+        # =====================================
+
+        with st.expander(
+            "🔍 Retrieval Details"
+        ):
+
+            scores_df = pd.DataFrame(
+                {
+                    "Chunk Index":
+                        I[0],
+                    "Distance":
+                        D[0]
+                }
+            )
+
+            st.dataframe(
+                scores_df
+            )
+
+        # =====================================
+        # RETRIEVED SOURCES
+        # =====================================
+
+        st.subheader(
+            "📄 Retrieved Sources"
+        )
+
+        for i, chunk in enumerate(
+            valid_chunks[:5]
+        ):
+
+            with st.expander(
+                f"Source {i+1}"
+            ):
+
+                st.write(
+                    chunk[:4000]
+                )
 
     except Exception as e:
 
         st.error(
             f"Error: {str(e)}"
         )
-
