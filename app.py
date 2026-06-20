@@ -6,39 +6,45 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from google import genai
 
-# -----------------------------
-# Gemini
-# -----------------------------
+# =====================================
+# Gemini Client
+# =====================================
+
 client = genai.Client(
     api_key=st.secrets["GEMINI_API_KEY"]
 )
 
-# -----------------------------
-# Embedding Model
-# -----------------------------
+# =====================================
+# Load Embedding Model
+# =====================================
+
 embedding_model = SentenceTransformer(
     "all-MiniLM-L6-v2"
 )
 
-# -----------------------------
+# =====================================
 # Load FAISS Index
-# -----------------------------
+# =====================================
+
 index = faiss.read_index(
     "financialIndex.faiss"
 )
 
-# -----------------------------
+# =====================================
 # Load Chunks
-# -----------------------------
+# =====================================
+
 with open(
     "companyChunks.pkl",
     "rb"
 ) as f:
+
     chunks = pickle.load(f)
 
-# -----------------------------
-# UI
-# -----------------------------
+# =====================================
+# Streamlit UI
+# =====================================
+
 st.set_page_config(
     page_title="Financial Research Agent",
     page_icon="📈"
@@ -56,9 +62,10 @@ query = st.text_input(
     "Ask a financial question"
 )
 
-# -----------------------------
-# Search + Answer
-# -----------------------------
+# =====================================
+# Search + RAG
+# =====================================
+
 if query:
 
     try:
@@ -74,7 +81,10 @@ if query:
             3
         )
 
-        st.write("Retrieved Indices:")
+        st.subheader(
+            "Retrieved Indices"
+        )
+
         st.write(I)
 
         valid_chunks = []
@@ -89,31 +99,56 @@ if query:
                     str(chunks[idx])
                 )
 
+        st.subheader(
+            "Retrieved Chunks Count"
+        )
+
         st.write(
-            f"Retrieved Chunks: {len(valid_chunks)}"
+            len(valid_chunks)
         )
 
         if len(valid_chunks) == 0:
 
             st.error(
-                "No chunks found."
+                "No chunks retrieved."
             )
 
             st.stop()
+
+        # =====================================
+        # DEBUG OUTPUT
+        # =====================================
+
+        st.subheader(
+            "Retrieved Context"
+        )
+
+        for i, chunk in enumerate(valid_chunks):
+
+            st.markdown(
+                f"### Chunk {i+1}"
+            )
+
+            st.text(
+                chunk[:1500]
+            )
 
         context = "\n".join(
             valid_chunks
         )
 
         prompt = f"""
-Context:
+You are a financial analyst.
+
+Use ONLY the context below.
+
+CONTEXT:
 {context}
 
-Question:
+QUESTION:
 {query}
 
-Answer only from the provided context.
-If the answer is not present in the context,
+If information is not present,
 say:
 "I could not find that information in the reports."
 """
@@ -134,5 +169,5 @@ say:
     except Exception as e:
 
         st.error(
-            f"ERROR: {str(e)}"
+            f"ERROR: {e}"
         )
