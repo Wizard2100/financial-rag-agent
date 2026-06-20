@@ -1,5 +1,5 @@
 streamlit
-google-genai
+google-generativeai
 sentence-transformers
 faiss-cpu
 numpy
