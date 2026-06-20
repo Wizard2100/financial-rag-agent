@@ -1,13 +1,8 @@
-from google import genai
 import streamlit as st
 
-client = genai.Client(
-    api_key=st.secrets["GEMINI_API_KEY"]
-)
+st.title("Secret Test")
 
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents="What is AI?"
-)
-
-st.write(response.text)
+if "GEMINI_API_KEY" in st.secrets:
+    st.success("Secret found successfully")
+else:
+    st.error("Secret NOT found")
