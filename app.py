@@ -1,4 +1,4 @@
-```python
+
 import streamlit as st
 import faiss
 import pickle
@@ -105,7 +105,7 @@ if query:
                 "Similarity Score": D[0]
             })
 
-st.dataframe(scores_df)
+            st.dataframe(scores_df)
 
             valid_chunks = []
             companies_used = set()
