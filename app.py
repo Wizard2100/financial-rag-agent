@@ -1,10 +1,21 @@
 import streamlit as st
+import google.generativeai as genai
 
-st.title("Debug")
+st.title("Gemini Test")
 
-st.write("Secret exists:", "GEMINI_API_KEY" in st.secrets)
+try:
+    genai.configure(
+        api_key=st.secrets["GEMINI_API_KEY"]
+    )
 
-if "GEMINI_API_KEY" in st.secrets:
-    key = st.secrets["GEMINI_API_KEY"]
-    st.write("Length:", len(key))
-    st.write("Starts with:", key[:5])
+    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    response = model.generate_content(
+        "What is AI?"
+    )
+
+    st.success("Gemini Connected!")
+    st.write(response.text)
+
+except Exception as e:
+    st.error(str(e))
