@@ -7,14 +7,14 @@ from sentence_transformers import SentenceTransformer
 from google import genai
 
 # -----------------------------
-# Gemini Client
+# Gemini
 # -----------------------------
 client = genai.Client(
     api_key=st.secrets["GEMINI_API_KEY"]
 )
 
 # -----------------------------
-# Load Embedding Model
+# Embedding Model
 # -----------------------------
 embedding_model = SentenceTransformer(
     "all-MiniLM-L6-v2"
@@ -37,18 +37,19 @@ with open(
     chunks = pickle.load(f)
 
 # -----------------------------
-# Debug
-# -----------------------------
-st.write(
-    "Chunks Loaded:",
-    len(chunks)
-)
-
-# -----------------------------
 # UI
 # -----------------------------
+st.set_page_config(
+    page_title="Financial Research Agent",
+    page_icon="📈"
+)
+
 st.title(
     "📈 Financial Research Agent"
+)
+
+st.write(
+    f"Chunks Loaded: {len(chunks)}"
 )
 
 query = st.text_input(
@@ -56,93 +57,82 @@ query = st.text_input(
 )
 
 # -----------------------------
-# Search
+# Search + Answer
 # -----------------------------
 if query:
 
-    query_vector = embedding_model.encode(
-        [query]
-    )
+    try:
 
-    D, I = index.search(
-        np.array(query_vector).astype(
-            "float32"
-        ),
-        3
-    )
-
-    st.write(
-        "Retrieved Indices:"
-    )
-
-    st.write(I)
-
-    valid_chunks = []
-
-    for idx in I[0]:
-
-        idx = int(idx)
-
-        if idx >= 0 and idx < len(chunks):
-
-            chunk = chunks[idx]
-
-            valid_chunks.append(
-                str(chunk)
-            )
-
-    st.write(
-        "Retrieved Chunks:",
-        len(valid_chunks)
-    )
-
-    if len(valid_chunks) == 0:
-
-        st.error(
-            "No valid chunks found."
+        query_vector = embedding_model.encode(
+            [query]
         )
 
-        st.stop()
+        D, I = index.search(
+            np.array(query_vector).astype(
+                "float32"
+            ),
+            3
+        )
 
-    st.write(
-        "Chunk Type:",
-        type(valid_chunks[0])
-    )
+        st.write("Retrieved Indices:")
+        st.write(I)
 
-    st.write(
-        "First Chunk Preview:"
-    )
+        valid_chunks = []
 
-    st.write(
-        valid_chunks[0][:500]
-    )
+        for idx in I[0]:
 
-    context = "\n".join(
-        valid_chunks
-    )
+            idx = int(idx)
 
-    prompt = f"""
+            if 0 <= idx < len(chunks):
+
+                valid_chunks.append(
+                    str(chunks[idx])
+                )
+
+        st.write(
+            f"Retrieved Chunks: {len(valid_chunks)}"
+        )
+
+        if len(valid_chunks) == 0:
+
+            st.error(
+                "No chunks found."
+            )
+
+            st.stop()
+
+        context = "\n".join(
+            valid_chunks
+        )
+
+        prompt = f"""
 Context:
 {context}
 
 Question:
 {query}
 
-Answer ONLY using the provided context.
+Answer only from the provided context.
 If the answer is not present in the context,
 say:
-'I could not find that information in the reports.'
+"I could not find that information in the reports."
 """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
 
-    st.subheader(
-        "Answer"
-    )
+        st.subheader(
+            "Answer"
+        )
 
-    st.write(
-        response.text
-    )
+        st.write(
+            response.text
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"ERROR: {str(e)}"
+        )
