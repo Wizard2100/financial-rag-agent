@@ -7,7 +7,17 @@ from sentence_transformers import SentenceTransformer
 from google import genai
 
 # =====================================
-# Gemini Client
+# PAGE CONFIG
+# =====================================
+
+st.set_page_config(
+    page_title="Financial Research Agent",
+    page_icon="📈",
+    layout="wide"
+)
+
+# =====================================
+# GEMINI CLIENT
 # =====================================
 
 client = genai.Client(
@@ -15,7 +25,7 @@ client = genai.Client(
 )
 
 # =====================================
-# Load Embedding Model
+# LOAD EMBEDDING MODEL
 # =====================================
 
 embedding_model = SentenceTransformer(
@@ -23,7 +33,7 @@ embedding_model = SentenceTransformer(
 )
 
 # =====================================
-# Load FAISS Index
+# LOAD FAISS INDEX
 # =====================================
 
 index = faiss.read_index(
@@ -31,7 +41,7 @@ index = faiss.read_index(
 )
 
 # =====================================
-# Load Chunks
+# LOAD CHUNKS
 # =====================================
 
 with open(
@@ -42,17 +52,10 @@ with open(
     chunks = pickle.load(f)
 
 # =====================================
-# Streamlit UI
+# UI
 # =====================================
 
-st.set_page_config(
-    page_title="Financial Research Agent",
-    page_icon="📈"
-)
-
-st.title(
-    "📈 Financial Research Agent"
-)
+st.title("📈 Financial Research Agent")
 
 st.write(
     f"Chunks Loaded: {len(chunks)}"
@@ -63,7 +66,7 @@ query = st.text_input(
 )
 
 # =====================================
-# Search + RAG
+# SEARCH
 # =====================================
 
 if query:
@@ -78,7 +81,7 @@ if query:
             np.array(query_vector).astype(
                 "float32"
             ),
-            3
+            5
         )
 
         st.subheader(
@@ -95,9 +98,34 @@ if query:
 
             if 0 <= idx < len(chunks):
 
-                valid_chunks.append(
-                    str(chunks[idx])
-                )
+                chunk = chunks[idx]
+
+                # chunk is a dictionary
+                if isinstance(chunk, dict):
+
+                    text = chunk.get(
+                        "text",
+                        ""
+                    )
+
+                    company = chunk.get(
+                        "company",
+                        "Unknown"
+                    )
+
+                    clean_text = (
+                        f"Company: {company}\n\n{text}"
+                    )
+
+                    valid_chunks.append(
+                        clean_text
+                    )
+
+                else:
+
+                    valid_chunks.append(
+                        str(chunk)
+                    )
 
         st.subheader(
             "Retrieved Chunks Count"
@@ -110,48 +138,63 @@ if query:
         if len(valid_chunks) == 0:
 
             st.error(
-                "No chunks retrieved."
+                "No chunks found."
             )
 
             st.stop()
 
         # =====================================
-        # DEBUG OUTPUT
+        # DEBUG CONTEXT
         # =====================================
 
         st.subheader(
             "Retrieved Context"
         )
 
-        for i, chunk in enumerate(valid_chunks):
+        for i, chunk in enumerate(
+            valid_chunks
+        ):
 
             st.markdown(
                 f"### Chunk {i+1}"
             )
 
-            st.text(
+            st.write(
                 chunk[:1500]
             )
 
-        context = "\n".join(
+        # =====================================
+        # CREATE CONTEXT
+        # =====================================
+
+        context = "\n\n".join(
             valid_chunks
         )
+
+        # =====================================
+        # PROMPT
+        # =====================================
 
         prompt = f"""
 You are a financial analyst.
 
-Use ONLY the context below.
+Answer ONLY from the provided context.
+
+If the answer is not available in the context,
+reply exactly:
+
+I could not find that information in the reports.
 
 CONTEXT:
 {context}
 
 QUESTION:
 {query}
-
-If information is not present,
-say:
-"I could not find that information in the reports."
 """
+
+        # =====================================
+        # GEMINI
+        # =====================================
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -169,5 +212,5 @@ say:
     except Exception as e:
 
         st.error(
-            f"ERROR: {e}"
+            f"ERROR: {str(e)}"
         )
