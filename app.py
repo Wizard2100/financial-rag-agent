@@ -1,29 +1,27 @@
 import streamlit as st
+import google.generativeai as genai
 
-st.set_page_config(
-    page_title="Financial Research Agent",
-    page_icon="📈"
-)
-
-st.title("📈 Financial Research Agent")
-
-st.write("Testing Gemini API key...")
+st.title("Gemini Test")
 
 try:
     apiKey = st.secrets["GEMINI_API_KEY"]
 
-    st.success("Secret found successfully")
-
-    st.write(
-        f"First 10 characters: {apiKey[:10]}"
+    genai.configure(
+        api_key=apiKey
     )
 
-    st.write(
-        f"Key length: {len(apiKey)}"
+    model = genai.GenerativeModel(
+        "gemini-1.5-flash"
     )
+
+    response = model.generate_content(
+        "Say hello"
+    )
+
+    st.success("Gemini Connected Successfully!")
+
+    st.write(response.text)
 
 except Exception as e:
 
-    st.error(
-        f"Error reading secret: {e}"
-    )
+    st.error(str(e))
