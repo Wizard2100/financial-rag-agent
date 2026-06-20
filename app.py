@@ -6,82 +6,143 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from google import genai
 
+# -----------------------------
 # Gemini Client
+# -----------------------------
 client = genai.Client(
     api_key=st.secrets["GEMINI_API_KEY"]
 )
 
-# Page Settings
-st.set_page_config(
-    page_title="Financial Research Agent",
-    page_icon="📈"
+# -----------------------------
+# Load Embedding Model
+# -----------------------------
+embedding_model = SentenceTransformer(
+    "all-MiniLM-L6-v2"
 )
 
-st.title("📈 Financial Research Agent")
-
-# Load Embedding Model
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
+# -----------------------------
 # Load FAISS Index
-index = faiss.read_index("financialIndex.faiss")
+# -----------------------------
+index = faiss.read_index(
+    "financialIndex.faiss"
+)
 
+# -----------------------------
 # Load Chunks
-with open("companyChunks.pkl", "rb") as f:
+# -----------------------------
+with open(
+    "companyChunks.pkl",
+    "rb"
+) as f:
     chunks = pickle.load(f)
 
-# Debug Info
-st.write("Chunks Loaded:", len(chunks))
+# -----------------------------
+# Debug
+# -----------------------------
+st.write(
+    "Chunks Loaded:",
+    len(chunks)
+)
+
+# -----------------------------
+# UI
+# -----------------------------
+st.title(
+    "📈 Financial Research Agent"
+)
 
 query = st.text_input(
     "Ask a financial question"
 )
 
+# -----------------------------
+# Search
+# -----------------------------
 if query:
 
-    with st.spinner("Analyzing..."):
+    query_vector = embedding_model.encode(
+        [query]
+    )
 
-        query_vector = model.encode([query])
+    D, I = index.search(
+        np.array(query_vector).astype(
+            "float32"
+        ),
+        3
+    )
 
-        D, I = index.search(
-            np.array(query_vector).astype("float32"),
-            3
+    st.write(
+        "Retrieved Indices:"
+    )
+
+    st.write(I)
+
+    valid_chunks = []
+
+    for idx in I[0]:
+
+        idx = int(idx)
+
+        if idx >= 0 and idx < len(chunks):
+
+            chunk = chunks[idx]
+
+            valid_chunks.append(
+                str(chunk)
+            )
+
+    st.write(
+        "Retrieved Chunks:",
+        len(valid_chunks)
+    )
+
+    if len(valid_chunks) == 0:
+
+        st.error(
+            "No valid chunks found."
         )
 
-        # Debug
-        st.write("Retrieved Indices:", I)
+        st.stop()
 
-        valid_chunks = []
-
-for idx in I[0]:
-    if 0 <= idx < len(chunks):
-        valid_chunks.append(chunks[idx])
-
-st.write("Retrieved Chunks:", len(valid_chunks))
-
-# DEBUG
-st.write("Chunk Type:", type(valid_chunks[0]))
-st.write("First Chunk:", valid_chunks[0])
-
-if len(valid_chunks) == 0:
-    st.error(
-        "No valid chunks found. Check your FAISS index and chunk file."
+    st.write(
+        "Chunk Type:",
+        type(valid_chunks[0])
     )
-    st.stop()
 
-context = "\n".join([str(x) for x in valid_chunks])
-        prompt = f"""
+    st.write(
+        "First Chunk Preview:"
+    )
+
+    st.write(
+        valid_chunks[0][:500]
+    )
+
+    context = "\n".join(
+        valid_chunks
+    )
+
+    prompt = f"""
 Context:
 {context}
 
 Question:
 {query}
 
-Answer using only the context.
+Answer ONLY using the provided context.
+If the answer is not present in the context,
+say:
+'I could not find that information in the reports.'
 """
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
 
-        st.write(response.text)
+    st.subheader(
+        "Answer"
+    )
+
+    st.write(
+        response.text
+    )
