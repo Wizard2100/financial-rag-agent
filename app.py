@@ -1,4 +1,13 @@
 import streamlit as st
+import google.generativeai as genai
+
+genai.configure(
+    api_key=st.secrets["GEMINI_API_KEY"]
+)
+
+model = genai.GenerativeModel(
+    "gemini-2.5-flash"
+)
 
 st.set_page_config(
     page_title="Financial Research Agent",
@@ -16,9 +25,12 @@ st.write(
     • Reliance
 
     Example Questions:
-    - Compare NVIDIA and Microsoft AI strategy
-    - What are NVIDIA's growth drivers?
-    - Summarize Reliance FY25
+
+    • Compare NVIDIA and Microsoft AI strategy
+
+    • What are NVIDIA's growth drivers?
+
+    • Summarize Reliance FY25
     """
 )
 
@@ -30,10 +42,12 @@ if st.button("Analyze"):
 
     if question:
 
-        st.info(
-            f"Question Received: {question}"
-        )
+        with st.spinner("Analyzing..."):
 
-        st.success(
-            "RAG backend will be connected next."
-        )
+            answer = model.generate_content(
+                question
+            )
+
+            st.markdown(
+                answer.text
+            )
