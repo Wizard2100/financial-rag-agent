@@ -57,8 +57,8 @@ with open(
 
 st.title("📈 Financial Research Agent")
 
-st.write(
-    f"Chunks Loaded: {len(chunks)}"
+st.caption(
+    f"Knowledge Base: {len(chunks)} financial chunks"
 )
 
 query = st.text_input(
@@ -66,25 +66,31 @@ query = st.text_input(
 )
 
 # =====================================
-# SEARCH
+# SEARCH + RAG
 # =====================================
 
 if query:
 
     try:
 
+        # --------------------------
+        # Embed query
+        # --------------------------
+
         query_vector = embedding_model.encode(
             [query]
         )
+
+        # --------------------------
+        # Retrieve top 20 chunks
+        # --------------------------
 
         D, I = index.search(
             np.array(query_vector).astype(
                 "float32"
             ),
-            5
+            20
         )
-
-       
 
         valid_chunks = []
 
@@ -96,25 +102,20 @@ if query:
 
                 chunk = chunks[idx]
 
-                # chunk is a dictionary
                 if isinstance(chunk, dict):
-
-                    text = chunk.get(
-                        "text",
-                        ""
-                    )
 
                     company = chunk.get(
                         "company",
                         "Unknown"
                     )
 
-                    clean_text = (
-                        f"Company: {company}\n\n{text}"
+                    text = chunk.get(
+                        "text",
+                        ""
                     )
 
                     valid_chunks.append(
-                        clean_text
+                        f"Company: {company}\n{text}"
                     )
 
                 else:
@@ -123,66 +124,64 @@ if query:
                         str(chunk)
                     )
 
-       
-
         if len(valid_chunks) == 0:
 
             st.error(
-                "No chunks found."
+                "No relevant information found."
             )
 
             st.stop()
 
-        # =====================================
-        # DEBUG CONTEXT
-        # =====================================
-
-       
-
-        # =====================================
-        # CREATE CONTEXT
-        # =====================================
+        # --------------------------
+        # Build context
+        # --------------------------
 
         context = "\n\n".join(
             valid_chunks
         )
 
-        # =====================================
-        # PROMPT
-        # =====================================
+        # --------------------------
+        # Better Prompt
+        # --------------------------
 
         prompt = f"""
-You are an expert financial analyst.
+You are a professional financial analyst.
 
-Answer ONLY from the context below.
+Use ONLY the information provided in the context.
 
-Rules:
-- Use exact numbers from the context.
-- Do not confuse revenue, profit, operating income, net income, or gross margin.
-- If the answer is not available in the context, reply:
+Instructions:
+- Answer in detail.
+- Mention important financial figures.
+- Compare companies if requested.
+- Explain the answer clearly.
+- Do not invent facts.
+
+If the answer is not available in the context,
+say:
+
 "I could not find that information in the reports."
 
-Context:
+CONTEXT:
 {context}
 
-Question:
+QUESTION:
 {query}
-
-Answer:
 """
 
-        # =====================================
-        # GEMINI
-        # =====================================
+        # --------------------------
+        # Gemini Response
+        # --------------------------
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt
         )
 
-        st.subheader(
-            "Answer"
-        )
+        # --------------------------
+        # Display Answer
+        # --------------------------
+
+        st.subheader("Answer")
 
         st.write(
             response.text
@@ -191,5 +190,5 @@ Answer:
     except Exception as e:
 
         st.error(
-            f"ERROR: {str(e)}"
+            f"Error: {str(e)}"
         )
