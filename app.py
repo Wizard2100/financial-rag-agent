@@ -52,20 +52,23 @@ if query:
 
         valid_chunks = []
 
-        for idx in I[0]:
-            if 0 <= idx < len(chunks):
-                valid_chunks.append(chunks[idx])
+for idx in I[0]:
+    if 0 <= idx < len(chunks):
+        valid_chunks.append(chunks[idx])
 
-        st.write("Retrieved Chunks:", len(valid_chunks))
+st.write("Retrieved Chunks:", len(valid_chunks))
 
-        if len(valid_chunks) == 0:
-            st.error(
-                "No valid chunks found. Check your FAISS index and chunk file."
-            )
-            st.stop()
+# DEBUG
+st.write("Chunk Type:", type(valid_chunks[0]))
+st.write("First Chunk:", valid_chunks[0])
 
-        context = "\n".join(valid_chunks)
+if len(valid_chunks) == 0:
+    st.error(
+        "No valid chunks found. Check your FAISS index and chunk file."
+    )
+    st.stop()
 
+context = "\n".join([str(x) for x in valid_chunks])
         prompt = f"""
 Context:
 {context}
