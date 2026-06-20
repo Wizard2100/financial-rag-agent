@@ -96,8 +96,16 @@ if query:
                 np.array(query_vector).astype(
                     "float32"
                 ),
-                20
+                50
             )
+            st.subheader("Similarity Scores")
+
+            scores_df = pd.DataFrame({
+                "Chunk Index": I[0],
+                "Similarity Score": D[0]
+            })
+
+st.dataframe(scores_df)
 
             valid_chunks = []
             companies_used = set()
@@ -151,20 +159,22 @@ if query:
             prompt = f"""
 You are a senior equity research analyst.
 
-Use the provided context as your primary source.
+Carefully analyze ALL retrieved context before answering.
 
-Tasks:
-1. Answer the question directly.
-2. Explain your reasoning.
-3. Highlight important financial figures.
-4. Compare companies if relevant.
-5. Discuss opportunities and risks.
-6. If information is incomplete, clearly state what is missing.
+Rules:
+- Use information from multiple chunks whenever possible.
+- Perform comparisons if the question asks for them.
+- Extract numerical values and financial metrics.
+- Explain your reasoning.
+- Summarize findings in bullet points.
+- Give a final conclusion.
 
-Context:
+If the answer is partially available, provide the available information instead of saying you cannot find it.
+
+CONTEXT:
 {context}
 
-Question:
+QUESTION:
 {query}
 """
 
