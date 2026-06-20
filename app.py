@@ -1,21 +1,12 @@
-import streamlit as st
-import google.generativeai as genai
+from google import genai
 
-st.title("Gemini Test")
+client = genai.Client(
+    api_key=st.secrets["GEMINI_API_KEY"]
+)
 
-try:
-    genai.configure(
-        api_key=st.secrets["GEMINI_API_KEY"]
-    )
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="What is AI?"
+)
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-    response = model.generate_content(
-        "What is AI?"
-    )
-
-    st.success("Gemini Connected!")
-    st.write(response.text)
-
-except Exception as e:
-    st.error(str(e))
+st.write(response.text)
