@@ -84,11 +84,7 @@ if query:
             5
         )
 
-        st.subheader(
-            "Retrieved Indices"
-        )
-
-        st.write(I)
+       
 
         valid_chunks = []
 
@@ -127,13 +123,7 @@ if query:
                         str(chunk)
                     )
 
-        st.subheader(
-            "Retrieved Chunks Count"
-        )
-
-        st.write(
-            len(valid_chunks)
-        )
+       
 
         if len(valid_chunks) == 0:
 
@@ -147,21 +137,7 @@ if query:
         # DEBUG CONTEXT
         # =====================================
 
-        st.subheader(
-            "Retrieved Context"
-        )
-
-        for i, chunk in enumerate(
-            valid_chunks
-        ):
-
-            st.markdown(
-                f"### Chunk {i+1}"
-            )
-
-            st.write(
-                chunk[:1500]
-            )
+       
 
         # =====================================
         # CREATE CONTEXT
@@ -176,20 +152,23 @@ if query:
         # =====================================
 
         prompt = f"""
-You are a financial analyst.
+You are an expert financial analyst.
 
-Answer ONLY from the provided context.
+Answer ONLY from the context below.
 
-If the answer is not available in the context,
-reply exactly:
+Rules:
+- Use exact numbers from the context.
+- Do not confuse revenue, profit, operating income, net income, or gross margin.
+- If the answer is not available in the context, reply:
+"I could not find that information in the reports."
 
-I could not find that information in the reports.
-
-CONTEXT:
+Context:
 {context}
 
-QUESTION:
+Question:
 {query}
+
+Answer:
 """
 
         # =====================================
