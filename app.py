@@ -1,53 +1,34 @@
 import streamlit as st
-import google.generativeai as genai
-
-genai.configure(
-    api_key=st.secrets["GEMINI_API_KEY"]
-)
-
-model = genai.GenerativeModel(
-    "gemini-2.5-flash"
-)
 
 st.set_page_config(
-    page_title="Financial Research Agent",
-    page_icon="📈"
+page_title="Financial Research Agent",
+page_icon="📈"
 )
 
 st.title("📈 Financial Research Agent")
 
+st.write("Testing Gemini API key...")
+
+try:
+
+```
+apiKey = st.secrets["GEMINI_API_KEY"]
+
+st.success("Secret found successfully")
+
 st.write(
-    """
-    Analyze annual reports of:
-
-    • NVIDIA
-    • Microsoft
-    • Reliance
-
-    Example Questions:
-
-    • Compare NVIDIA and Microsoft AI strategy
-
-    • What are NVIDIA's growth drivers?
-
-    • Summarize Reliance FY25
-    """
+    f"First 10 characters: {apiKey[:10]}"
 )
 
-question = st.text_input(
-    "Ask a financial question"
+st.write(
+    f"Key length: {len(apiKey)}"
 )
+```
 
-if st.button("Analyze"):
+except Exception as e:
 
-    if question:
-
-        with st.spinner("Analyzing..."):
-
-            answer = model.generate_content(
-                question
-            )
-
-            st.markdown(
-                answer.text
-            )
+```
+st.error(
+    f"Error reading secret: {e}"
+)
+```
