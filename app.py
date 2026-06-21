@@ -511,7 +511,7 @@ def handle_gemini_error(e, context_msg="evaluating query"):
             <p style='color:#e6edf3; font-size:14px; margin:0;'>
                 The Gemini API rate limit has been reached. 
                 If you are using the shared demo key, please wait a few seconds before retrying, or 
-                provide your own Gemini API Key in the sidebar for uninterrupted access.
+                provide your own Gemini API Key in the sidebar expander (under Custom API Settings) for uninterrupted access.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -521,7 +521,7 @@ def handle_gemini_error(e, context_msg="evaluating query"):
             <h5 style='color:#ff7b72; margin:0 0 8px 0;'>🔑 Invalid API Key Configuration</h5>
             <p style='color:#e6edf3; font-size:14px; margin:0;'>
                 The provided Gemini API Key appears to be invalid or expired. 
-                Please verify the key in your settings or sidebar.
+                Please verify the key in the sidebar expander (under Custom API Settings).
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -580,7 +580,18 @@ def get_news_sentiment(ticker_symbol, api_key_val):
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
 
-api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+with st.sidebar.expander("🔑 Custom API Settings (Optional)"):
+    user_api_key = st.text_input(
+        "Gemini API Key",
+        type="password",
+        value=st.session_state.get("custom_api_key", ""),
+        help="Paste your own API key to bypass shared rate limits. It is masked and processed securely."
+    )
+    if user_api_key:
+        st.session_state["custom_api_key"] = user_api_key
+
+custom_key = st.session_state.get("custom_api_key", "")
+api_key = custom_key or st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 
 company_search_query = st.sidebar.text_input(
     "Search Company Name", 
@@ -637,8 +648,10 @@ else:
     st.sidebar.warning(f"Could not download financials for '{global_ticker}'. Displaying offline estimates.")
 
 st.sidebar.divider()
-if api_key:
-    st.sidebar.caption("⚡ Gemini API: Connected")
+if custom_key:
+    st.sidebar.caption("⚡ Gemini API: Connected (Custom Key)")
+elif api_key:
+    st.sidebar.caption("⚡ Gemini API: Connected (Shared Demo Key)")
 else:
     st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
 
@@ -1275,7 +1288,7 @@ with tab_port:
                         
                         # Sort weights to match alphabetically sorted columns
                         sorted_tickers = sorted(port_tickers)
-                        w_vector = np.array([normalized_weights[t] for t, w in normalized_weights.items()])
+                        w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
                         
                         portfolio_daily = returns.dot(w_vector)
                         
@@ -1898,7 +1911,7 @@ with tab_rag:
             st.caption("📌 Cached response loaded. Zero API quota used.")
         else:
             if not api_key:
-                st.error("No Gemini API Key loaded. This query is not in the demo cache. Please configure the environment API Key.")
+                st.error("No Gemini API Key loaded. This query is not in the demo cache. Please enter your API Key in the sidebar expander (under Custom API Settings) to run custom prompts.")
                 st.stop()
                 
             with st.spinner("Agent is retrieving & parsing filings..."):
@@ -1910,7 +1923,7 @@ with tab_rag:
                     handle_gemini_error(e, "retrieving & parsing annual filings")
                     
         if data:
-            st.markdown(f"#### 💡 Executive Summary")
+            st.markdown(f"#### 🔍 Executive Summary")
             st.info(data.get("summary", ""))
             
             findings = data.get("key_findings") or []
@@ -1996,129 +2009,3 @@ with tab_cca:
                     p_ticker = yf.Ticker(peer)
                     p_info = p_ticker.info
                     peer_data.append({
-                        "Ticker": peer,
-                        "Name": p_info.get("longName") or p_info.get("shortName") or peer,
-                        "Trailing P/E": p_info.get("trailingPE"),
-                        "Forward P/E": p_info.get("forwardPE"),
-                        "Price / Sales": p_info.get("priceToSalesTrailing12Months"),
-                        "EV / EBITDA": p_info.get("enterpriseToEbitda")
-                    })
-                except Exception:
-                    pass
-                    
-            if not peer_data:
-                st.error("Could not fetch data for any of the peers. Please check the tickers.")
-            else:
-                df_peers = pd.DataFrame(peer_data)
-                st.markdown("**Peer Valuation Multiples Table:**")
-                st.dataframe(df_peers.style.format({
-                    "Trailing P/E": "{:,.2f}",
-                    "Forward P/E": "{:,.2f}",
-                    "Price / Sales": "{:,.2f}",
-                    "EV / EBITDA": "{:,.2f}"
-                }, na_rep="—"), use_container_width=True)
-                
-                # Fetch target EPS, Revenue per Share, EBITDA per Share
-                target_ticker = yf.Ticker(active_company)
-                target_info = target_ticker.info
-                
-                target_eps = target_info.get("trailingEps") or (active_data["net_income"] / active_data["shares"])
-                target_rev_per_share = (active_data["revenue"] / active_data["shares"])
-                
-                target_ebitda = target_info.get("ebitda") or (active_data["ebit"] * 1.2 * 1e9)
-                target_ebitda_per_share = (target_ebitda / 1e9) / active_data["shares"]
-                
-                # Calculate Peer Averages
-                avg_pe_trail = df_peers["Trailing P/E"].mean(skipna=True)
-                avg_pe_fwd = df_peers["Forward P/E"].mean(skipna=True)
-                avg_ps = df_peers["Price / Sales"].mean(skipna=True)
-                avg_evebitda = df_peers["EV / EBITDA"].mean(skipna=True)
-                
-                net_debt_per_share = (active_data["debt"] - active_data["cash"]) / active_data["shares"]
-                
-                # Implied share prices
-                implied_prices = {}
-                if pd.notna(avg_pe_trail) and target_eps:
-                    implied_prices["Trailing P/E"] = avg_pe_trail * target_eps
-                if pd.notna(avg_pe_fwd) and target_info.get("forwardEps"):
-                    implied_prices["Forward P/E"] = avg_pe_fwd * target_info["forwardEps"]
-                if pd.notna(avg_ps) and target_rev_per_share:
-                    implied_prices["Price / Sales"] = avg_ps * target_rev_per_share
-                if pd.notna(avg_evebitda) and target_ebitda_per_share:
-                    implied_prices["EV / EBITDA"] = (target_ebitda_per_share * avg_evebitda) - net_debt_per_share
-                    
-                st.markdown("#### Implied Relative Prices:")
-                implied_df = pd.DataFrame([
-                    {"Multiple Method": method, "Implied Value": round(val, 2)}
-                    for method, val in implied_prices.items()
-                ])
-                st.dataframe(implied_df, use_container_width=True)
-                
-                # Football Field Range Chart
-                fig_football = go.Figure()
-                
-                y_methods = list(implied_prices.keys())
-                
-                for idx, method in enumerate(y_methods):
-                    val = implied_prices[method]
-                    low_val = val * 0.85
-                    high_val = val * 1.15
-                    
-                    fig_football.add_trace(go.Bar(
-                        y=[method],
-                        x=[high_val - low_val],
-                        base=low_val,
-                        orientation='h',
-                        name=method,
-                        marker=dict(color='#58a6ff', opacity=0.8),
-                        hovertemplate=f"Range: ${low_val:.2f} - ${high_val:.2f}<br>Mid: ${val:.2f}"
-                    ))
-                    
-                    fig_football.add_trace(go.Scatter(
-                        y=[method],
-                        x=[val],
-                        mode='markers+text',
-                        text=[f"${val:.2f}"],
-                        textposition="top center",
-                        marker=dict(color='#bc8cff', size=10, symbol='diamond'),
-                        showlegend=False
-                    ))
-                    
-                curr_price = active_data["price"]
-                if curr_price:
-                    fig_football.add_vline(x=curr_price, line_width=2, line_dash="dash", line_color="#f85149")
-                    fig_football.add_annotation(
-                        x=curr_price, y=len(y_methods)-0.5,
-                        text=f"Current Price: ${curr_price:.2f}",
-                        showarrow=True, arrowhead=1,
-                        arrowcolor="#f85149", font=dict(color="#f85149")
-                    )
-                
-                # Overlay DCF Fair Value if present in session state
-                dcf_val_saved = st.session_state.get("implied_share_value")
-                if dcf_val_saved:
-                    fig_football.add_vline(x=dcf_val_saved, line_width=2, line_dash="dot", line_color="#bc8cff")
-                    fig_football.add_annotation(
-                        x=dcf_val_saved, y=len(y_methods)-0.1,
-                        text=f"DCF Fair Value: ${dcf_val_saved:.2f}",
-                        showarrow=True, arrowhead=1,
-                        arrowcolor="#bc8cff", font=dict(color="#bc8cff")
-                    )
-                    
-                fig_football.update_layout(
-                    title="Valuation Football Field Range Comparison ($)",
-                    barmode='overlay',
-                    showlegend=False,
-                    xaxis_title="Implied Share Price ($)",
-                    yaxis_title="Valuation Methodology",
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    font={'color': "#e6edf3"},
-                    height=300,
-                    margin=dict(t=50, b=20, l=20, r=20)
-                )
-                
-                with col_cca_chart:
-                    st.plotly_chart(fig_football, use_container_width=True)
-    else:
-        st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
