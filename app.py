@@ -410,14 +410,17 @@ else:
     st.sidebar.warning(f"Could not download financials for '{global_ticker}'. Displaying offline estimates.")
 
 st.sidebar.divider()
-st.sidebar.markdown("<h2 style='color:#e6edf3; font-size:18px;'>🔑 LLM Configuration</h2>", unsafe_allow_html=True)
-user_api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Add key for custom RAG prompts.")
-api_key = user_api_key or st.secrets.get("GEMINI_API_KEY", "")
+# =====================================
+# API KEY RESOLUTION (Loaded securely from secrets or environment)
+# =====================================
+api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 
 if api_key:
-    st.sidebar.success("Gemini API Key Loaded!")
+    st.sidebar.caption("⚡ Gemini API: Connected (Secure Mode)")
 else:
-    st.sidebar.info("Demo Mode (Cache-only active). Input key for custom prompts.")
+    st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
+
+# Old cache definitions removed (moved to top of file)
 
 # =====================================
 # APP LOGIC HEADER
