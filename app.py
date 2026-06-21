@@ -589,9 +589,18 @@ with st.sidebar.expander("🔑 Custom API Settings (Optional)"):
     )
     if user_api_key:
         st.session_state["custom_api_key"] = user_api_key
+        st.success("Custom Key Registered!")
 
 custom_key = st.session_state.get("custom_api_key", "")
-api_key = custom_key or st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+
+secrets_key = ""
+if hasattr(st, "secrets") and st.secrets:
+    for k in ["GEMINI_API_KEY", "gemini_api_key", "Gemini_Api_Key", "GeminiApiKey", "geminiapikey"]:
+        if k in st.secrets:
+            secrets_key = st.secrets[k]
+            break
+
+api_key = custom_key or secrets_key or os.environ.get("GEMINI_API_KEY", "")
 
 company_search_query = st.sidebar.text_input(
     "Search Company Name", 
@@ -1525,27 +1534,35 @@ with tab_self_rag:
                         }}
                         """
                         try:
-                            try:
-                                resp = client.models.generate_content(
-                                    model="gemini-2.5-flash", 
-                                    contents=prompt,
-                                    config=types.GenerateContentConfig(
-                                        response_mime_type="application/json",
-                                        temperature=0.2
-                                    )
-                                )
-                            except errors.ClientError as ec:
-                                if ec.code == 429:
+                            import time
+                            resp = None
+                            for attempt in range(4):
+                                try:
                                     resp = client.models.generate_content(
-                                        model="gemini-2.5-flash-lite", 
+                                        model="gemini-2.5-flash", 
                                         contents=prompt,
                                         config=types.GenerateContentConfig(
                                             response_mime_type="application/json",
                                             temperature=0.2
                                         )
                                     )
-                                else:
-                                    raise ec
+                                    break
+                                except errors.ClientError as ec:
+                                    if ec.code == 429:
+                                        if attempt < 3:
+                                            time.sleep(2 * (attempt + 1))
+                                            continue
+                                        else:
+                                            resp = client.models.generate_content(
+                                                model="gemini-2.5-flash-lite", 
+                                                contents=prompt,
+                                                config=types.GenerateContentConfig(
+                                                    response_mime_type="application/json",
+                                                    temperature=0.2
+                                                )
+                                            )
+                                    else:
+                                        raise ec
                                     
                             # Parse JSON response
                             raw_clean = re.sub(r"^```(json)?|```$", "", resp.text.strip()).strip()
@@ -1841,20 +1858,11 @@ Rules:
 3. currencies: keep units exactly as reported (USD for US stocks, INR Crore for Indian stocks, EUR for European, etc.).
 """
     client = genai.Client(api_key=api_key)
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=system_prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2
-            )
-        )
-        return response.text
-    except errors.ClientError as e:
-        if e.code == 429:
+    import time
+    for attempt in range(4):
+        try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-2.5-flash",
                 contents=system_prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -1862,7 +1870,22 @@ Rules:
                 )
             )
             return response.text
-        raise e
+        except errors.ClientError as e:
+            if e.code == 429:
+                if attempt < 3:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    response = client.models.generate_content(
+                        model="gemini-2.5-flash-lite",
+                        contents=system_prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.2
+                        )
+                    )
+                    return response.text
+            raise e
 
 COMPANY_ALIASES = {
     "NVIDIA": ["nvidia", "nvda"],
