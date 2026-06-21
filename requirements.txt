@@ -6,3 +6,5 @@ numpy
 pypdf
 python-docx
 plotly
+yfinance
+
