@@ -1,3 +1,6 @@
+# Financial RAG Agent
+
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://financial-rag-agent-jehdvbyxnr3wbu3gub3fga.streamlit.app/)
 # Financial Research Agent
 
 RAG + agentic tool-use over NVIDIA, Microsoft, and Reliance FY25 annual reports, with a
