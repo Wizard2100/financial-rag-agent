@@ -1038,7 +1038,7 @@ with tab_dup:
         
     with col_f:
         f_color = "#3fb950" if solvency['f_score'] >= 7 else ("#dfb312" if solvency['f_score'] >= 4 else "#f85149")
-        f_desc = "Strong Financial Health" if solvency['f_score'] >= 7 else ("Stable Health" if solvency['f_score'] >= 4 else "Weak / High Risk")
+        f_desc = "Strong Financial Health" if solvency['f_score'] >= 7 else ("stable Health" if solvency['f_score'] >= 4 else "Weak / High Risk")
         st.markdown(f"""
         <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:15px; text-align:center;'>
             <span style='color:#8b949e; font-size:12px; text-transform:uppercase;'>Piotroski F-Score</span><br/>
@@ -1275,7 +1275,7 @@ with tab_port:
                         
                         # Sort weights to match alphabetically sorted columns
                         sorted_tickers = sorted(port_tickers)
-                        w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
+                        w_vector = np.array([normalized_weights[t] for t, w in normalized_weights.items()])
                         
                         portfolio_daily = returns.dot(w_vector)
                         
@@ -1504,7 +1504,13 @@ with tab_self_rag:
                         {up_query}
                         """
                         try:
-                            resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                            try:
+                                resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                            except errors.ClientError as ec:
+                                if ec.code == 429:
+                                    resp = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+                                else:
+                                    raise ec
                             st.markdown("#### 💡 AI Answer:")
                             st.write(resp.text)
                         except Exception as e:
