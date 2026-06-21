@@ -676,7 +676,7 @@ with tab_port:
         st.markdown("**Normalized Allocation Weights:**")
         st.code(" | ".join([f"{t}: {w*100:.1f}%" for t, w in normalized_weights.items()]))
         
-        duration_yrs = st.selectbox("Backtest History Period", [1, 2, 5], index=1, key="backtest_dur")
+        duration_yrs = st.slider("Backtest History Period (Years)", min_value=1, max_value=15, value=3, step=1, key="backtest_dur")
         run_backtest = st.button("🚀 Run Backtest Engine", use_container_width=True, key="run_port_backtest")
         
     with col_perf:
