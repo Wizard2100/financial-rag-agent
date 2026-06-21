@@ -1,4 +1,3 @@
-
 import streamlit as st
 import faiss
 import pickle
@@ -492,6 +491,9 @@ def compute_solvency_scores(ticker_symbol, active_price, active_shares):
 # =====================================
 def handle_gemini_error(e, context_msg="evaluating query"):
     error_str = str(e)
+    # Scrub API keys to prevent accidental leaks in the UI
+    error_str = re.sub(r"AIzaSy[A-Za-z0-9_-]{35}", "[REDACTED_API_KEY]", error_str)
+    error_str = re.sub(r"key=[A-Za-z0-9_-]+", "key=[REDACTED]", error_str)
     if "json" in error_str.lower() or "decode" in error_str.lower() or "parse" in error_str.lower():
         st.markdown(f"""
         <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
@@ -650,8 +652,6 @@ if api_key:
         st.sidebar.caption("⚡ Gemini API: Connected (Default Key)")
 else:
     st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
-
-# Old cache definitions removed (moved to top of file)
 
 # =====================================
 # APP LOGIC HEADER
@@ -2072,4 +2072,3 @@ with tab_cca:
                     st.plotly_chart(fig_football, use_container_width=True)
     else:
         st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
-
