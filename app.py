@@ -580,15 +580,7 @@ def get_news_sentiment(ticker_symbol, api_key_val):
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
 
-# Custom API Key Input
-user_api_key = st.sidebar.text_input(
-    "Custom Gemini API Key (Optional)", 
-    type="password", 
-    value="",
-    help="Enter your own Gemini API key to avoid shared rate limits. If left blank, the shared demo key will be used."
-)
-system_api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
-api_key = user_api_key.strip() if user_api_key.strip() else system_api_key
+api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 
 company_search_query = st.sidebar.text_input(
     "Search Company Name", 
@@ -646,10 +638,7 @@ else:
 
 st.sidebar.divider()
 if api_key:
-    if user_api_key.strip():
-        st.sidebar.caption("⚡ Gemini API: Connected (Custom Key)")
-    else:
-        st.sidebar.caption("⚡ Gemini API: Connected (Default Key)")
+    st.sidebar.caption("⚡ Gemini API: Connected")
 else:
     st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
 
@@ -1521,7 +1510,7 @@ with tab_self_rag:
                         except Exception as e:
                             handle_gemini_error(e, "evaluating document context")
                 else:
-                    st.info("Input a Gemini API Key in the sidebar to get AI-generated answers. Direct matching source chunks are shown below.")
+                    st.info("System API Key not configured. Direct matching source chunks are shown below.")
                 
                 # Show source chunks
                 st.markdown("#### 🔍 Matching Segments:")
@@ -1848,7 +1837,7 @@ with tab_rag:
             st.caption("📌 Cached response loaded. Zero API quota used.")
         else:
             if not api_key:
-                st.error("No Gemini API Key loaded. This query is not in the demo cache. Please enter your API Key in the sidebar to run custom prompts.")
+                st.error("No Gemini API Key loaded. This query is not in the demo cache. Please configure the environment API Key.")
                 st.stop()
                 
             with st.spinner("Agent is retrieving & parsing filings..."):
