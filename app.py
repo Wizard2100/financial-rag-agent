@@ -363,6 +363,50 @@ def fetch_global_financials(ticker_symbol):
         return None
 
 # =====================================
+# AI SENTIMENT ENGINE (Cached for performance)
+# =====================================
+@st.cache_data(ttl=1800)
+def get_news_sentiment(ticker_symbol, api_key_val):
+    if not api_key_val:
+        return "NEUTRAL (Demo Mode)"
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        news = ticker.news
+        if not news:
+            return "NEUTRAL"
+        headlines = [item.get("title", "") for item in news[:5]]
+        if not headlines:
+            return "NEUTRAL"
+        
+        client = genai.Client(api_key=api_key_val)
+        prompt = f"""
+        Analyze the corporate financial sentiment of the following news headlines for ticker {ticker_symbol}.
+        Classify the overall sentiment as BULLISH, BEARISH, or NEUTRAL.
+        Return ONLY a single word: BULLISH, BEARISH, or NEUTRAL.
+        
+        HEADLINES:
+        {chr(10).join(headlines)}
+        """
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        sentiment = response.text.strip().upper()
+        if "BULLISH" in sentiment:
+            return "BULLISH"
+        elif "BEARISH" in sentiment:
+            return "BEARISH"
+        else:
+            return "NEUTRAL"
+    except Exception:
+        return "NEUTRAL"
+
+# =====================================
+# API KEY RESOLUTION (Loaded securely from secrets or environment)
+# =====================================
+api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+
+# =====================================
 # SIDEBAR CONTROLS
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
@@ -406,21 +450,25 @@ if global_data:
         <span style='font-size:22px; font-weight:700; color:#58a6ff;'>{price_str}</span>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Render AI Sentiment
+    sentiment_val = get_news_sentiment(global_ticker, api_key)
+    sentiment_color = "#3fb950" if "BULLISH" in sentiment_val else ("#f85149" if "BEARISH" in sentiment_val else "#8b949e")
+    
+    st.sidebar.markdown(f"""
+    <div style='background-color:#121824; border:1px solid #212836; border-radius:6px; padding:10px 15px; margin-bottom:10px; border-left: 4px solid {sentiment_color};'>
+        <span style='color:#8b949e; font-size:12px;'>AI Market Sentiment</span><br/>
+        <span style='font-size:18px; font-weight:700; color:{sentiment_color};'>{sentiment_val}</span>
+    </div>
+    """, unsafe_allow_html=True)
 else:
     st.sidebar.warning(f"Could not download financials for '{global_ticker}'. Displaying offline estimates.")
 
 st.sidebar.divider()
-# =====================================
-# API KEY RESOLUTION (Loaded securely from secrets or environment)
-# =====================================
-api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
-
 if api_key:
     st.sidebar.caption("⚡ Gemini API: Connected (Secure Mode)")
 else:
     st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
-
-# Old cache definitions removed (moved to top of file)
 
 # =====================================
 # APP LOGIC HEADER
@@ -428,12 +476,13 @@ else:
 st.markdown("<h1 class='main-title'>ValuEdge: Global Investment Terminal & RAG Agent</h1>", unsafe_allow_html=True)
 
 # Main Application Tabs
-tab_val, tab_dup, tab_port, tab_self_rag, tab_rag = st.tabs([
+tab_val, tab_dup, tab_port, tab_self_rag, tab_rag, tab_cca = st.tabs([
     "📈 Global DCF Appraiser", 
     "🕸️ du Pont Profitability", 
     "📊 Dynamic Portfolio Backtest",
     "📁 Self-Serve PDF RAG",
-    "🔒 Global Reports RAG"
+    "🔒 Global Reports RAG",
+    "🏟️ Peer Valuation (CCA)"
 ])
 
 # Get baseline active company data
@@ -559,6 +608,67 @@ with tab_val:
     }, index=years_label)
     st.dataframe(dcf_df.T, use_container_width=True)
 
+    # Sensitivity analysis matrix
+    st.markdown("#### 🌡️ Sensitivity Analysis: Implied Fair Value vs WACC & growth")
+    st.caption("How the WACC (discount rate) and Terminal Growth Rate assumptions shift the implied share price.")
+    
+    wacc_steps = [dcf_wacc + diff for diff in [-2.0, -1.0, 0.0, 1.0, 2.0]]
+    terminal_steps = [dcf_terminal + diff for diff in [-1.0, -0.5, 0.0, 0.5, 1.0]]
+    
+    sensitivity_matrix = []
+    for tg in terminal_steps:
+        row_vals = []
+        for wc in wacc_steps:
+            if wc <= tg:
+                row_vals.append(0.0)
+            else:
+                temp_terminal_value = (fcf_projection[-1] * (1 + (tg / 100))) / ((wc - tg) / 100)
+                temp_discount_factors = [1 / ((1 + (wc / 100)) ** yr) for yr in range(1, 6)]
+                temp_pv_cashflows = [fcf * df for fcf, df in zip(fcf_projection, temp_discount_factors)]
+                temp_sum_pv = sum(temp_pv_cashflows)
+                temp_pv_terminal = temp_terminal_value * temp_discount_factors[-1]
+                temp_ev = temp_sum_pv + temp_pv_terminal
+                temp_eq_val = temp_ev + active_data["cash"] - active_data["debt"]
+                temp_implied_price = temp_eq_val / active_data["shares"]
+                row_vals.append(round(temp_implied_price, 2))
+        sensitivity_matrix.append(row_vals)
+        
+    df_sens = pd.DataFrame(
+        sensitivity_matrix,
+        index=[f"{tg:.1f}%" for tg in terminal_steps],
+        columns=[f"{wc:.1f}%" for wc in wacc_steps]
+    )
+    
+    fig_sens = px.imshow(
+        df_sens,
+        labels=dict(x="Discount Rate / WACC (%)", y="Terminal Growth Rate (%)", color=f"Fair Value ({active_data['currency']})"),
+        x=df_sens.columns,
+        y=df_sens.index,
+        color_continuous_scale="Viridis",
+        aspect="auto"
+    )
+    
+    for y_idx, y_val in enumerate(df_sens.index):
+        for x_idx, x_val in enumerate(df_sens.columns):
+            val = df_sens.iloc[y_idx, x_idx]
+            text_val = f"${val:,.2f}" if val > 0 else "—"
+            fig_sens.add_annotation(
+                x=x_val, y=y_val,
+                text=text_val,
+                showarrow=False,
+                font=dict(color="white" if val < df_sens.values.max() * 0.7 else "black", size=11)
+            )
+            
+    fig_sens.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font={'color': "#e6edf3"},
+        coloraxis_showscale=False,
+        height=320,
+        margin=dict(t=20, b=20, l=20, r=20)
+    )
+    st.plotly_chart(fig_sens, use_container_width=True)
+
 # =====================================
 # TAB 2: DU PONT PROFITABILITY
 # =====================================
@@ -630,7 +740,7 @@ with tab_dup:
                         "Financial Leverage (x)": data["leverage"],
                         "ROE (%)": data["roe"]
                     })
-
+ 
     if dup_bench:
         df_dup = pd.DataFrame(dup_bench)
         col_m, col_t, col_l = st.columns(3)
@@ -646,6 +756,85 @@ with tab_dup:
         fig_dup_lev = px.bar(df_dup, x="Company", y="Financial Leverage (x)", color="Company", title="Financial Leverage Multipliers (x)", text_auto=".2f")
         fig_dup_lev.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
         col_l.plotly_chart(fig_dup_lev, use_container_width=True)
+
+        st.markdown("#### 🌳 Interactive du Pont Identity Tree Map")
+        st.caption(f"Decomposition tree showing how operating parameters flow up to ROE for {active_data['name']}.")
+        
+        nodes = {
+            "ROE": (0, 2, f"ROE<br><b>{active_data['roe']:.2f}%</b>"),
+            "Margin": (-1.5, 1, f"Profit Margin<br><b>{active_data['net_margin']:.2f}%</b>"),
+            "Turnover": (0, 1, f"Asset Turnover<br><b>{active_data['asset_turnover']:.2f}x</b>"),
+            "Leverage": (1.5, 1, f"Financial Leverage<br><b>{active_data['leverage']:.2f}x</b>"),
+            "NetIncome": (-2.2, 0, f"Net Income<br><b>${active_data['net_income']:.2f}B</b>"),
+            "Rev1": (-1.2, 0, f"Revenue<br><b>${active_data['revenue']:.2f}B</b>"),
+            "Rev2": (-0.5, 0, f"Revenue<br><b>${active_data['revenue']:.2f}B</b>"),
+            "Assets1": (0.5, 0, f"Total Assets<br><b>${active_data['assets']:.2f}B</b>"),
+            "Assets2": (1.2, 0, f"Total Assets<br><b>${active_data['assets']:.2f}B</b>"),
+            "Equity": (2.2, 0, f"Total Equity<br><b>${active_data['equity']:.2f}B</b>")
+        }
+        
+        edges = [
+            ("ROE", "Margin"), ("ROE", "Turnover"), ("ROE", "Leverage"),
+            ("Margin", "NetIncome"), ("Margin", "Rev1"),
+            ("Turnover", "Rev2"), ("Turnover", "Assets1"),
+            ("Leverage", "Assets2"), ("Leverage", "Equity")
+        ]
+        
+        edge_x = []
+        edge_y = []
+        for parent, child in edges:
+            px_coord, py_coord, _ = nodes[parent]
+            cx_coord, cy_coord, _ = nodes[child]
+            edge_x.extend([px_coord, cx_coord, None])
+            edge_y.extend([py_coord, cy_coord, None])
+            
+        fig_tree = go.Figure()
+        
+        fig_tree.add_trace(go.Scatter(
+            x=edge_x, y=edge_y,
+            line=dict(width=1.5, color='#303e5c'),
+            hoverinfo='none',
+            mode='lines'
+        ))
+        
+        node_x = [coord[0] for coord in nodes.values()]
+        node_y = [coord[1] for coord in nodes.values()]
+        node_text = [coord[2] for coord in nodes.values()]
+        
+        node_colors = []
+        for name in nodes.keys():
+            if name == "ROE":
+                node_colors.append("#bc8cff")
+            elif name in ["Margin", "Turnover", "Leverage"]:
+                node_colors.append("#58a6ff")
+            else:
+                node_colors.append("#8b949e")
+                
+        fig_tree.add_trace(go.Scatter(
+            x=node_x, y=node_y,
+            mode='markers+text',
+            text=node_text,
+            textposition="top center",
+            marker=dict(
+                symbol='circle',
+                size=18,
+                color=node_colors,
+                line=dict(color='#0b0f19', width=2)
+            ),
+            textfont=dict(color='#e6edf3', size=11),
+            hoverinfo='none'
+        ))
+        
+        fig_tree.update_layout(
+            showlegend=False,
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-2.7, 2.7]),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.3, 2.4]),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            height=320,
+            margin=dict(t=10, b=10, l=10, r=10)
+        )
+        st.plotly_chart(fig_tree, use_container_width=True)
     else:
         st.error("No valid company data loaded. Please check the ticker symbols.")
 
@@ -686,85 +875,166 @@ with tab_port:
                 start_d = end_d - timedelta(days=duration_yrs * 365)
                 
                 try:
-                     df_prices = yf.download(port_tickers, start=start_d, end=end_d)["Close"]
-                     df_benchmark = yf.download("^GSPC", start=start_d, end=end_d)["Close"]
-                     
-                     if df_prices.empty or df_benchmark.empty:
-                         st.error("Failed to download pricing data. Please check ticker symbols.")
-                     else:
-                         df_prices = df_prices.ffill().bfill()
-                         df_benchmark = df_benchmark.ffill().bfill()
-                         df_prices, df_benchmark = df_prices.align(df_benchmark, join='inner', axis=0)
-                         
-                         returns = df_prices.pct_change().dropna()
-                         bench_returns = df_benchmark.pct_change().dropna()
-                         
-                         # Sort weights to match alphabetically sorted columns
-                         sorted_tickers = sorted(port_tickers)
-                         w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
-                         
-                         portfolio_daily = returns.dot(w_vector)
-                         
-                         # Resolve single-column dataframes to 1D series
-                         if isinstance(portfolio_daily, pd.DataFrame):
-                             portfolio_daily = portfolio_daily.squeeze()
-                         if isinstance(bench_returns, pd.DataFrame):
-                             bench_daily = bench_returns.squeeze()
-                         else:
-                             bench_daily = bench_returns
-                             
-                         if isinstance(portfolio_daily, pd.DataFrame):
-                             portfolio_daily = portfolio_daily.iloc[:, 0]
-                         if isinstance(bench_daily, pd.DataFrame):
-                             bench_daily = bench_daily.iloc[:, 0]
-                             
-                         cum_portfolio = (1 + portfolio_daily).cumprod() - 1
-                         cum_benchmark = (1 + bench_daily).cumprod() - 1
-                         
-                         ann_return_p = float(portfolio_daily.mean() * 252 * 100)
-                         ann_vol_p = float(portfolio_daily.std() * np.sqrt(252) * 100)
-                         sharpe_p = float((ann_return_p - 4.0) / ann_vol_p) if ann_vol_p > 0 else 0.0
-                         
-                         cum_returns_plus_one = (1 + portfolio_daily).cumprod()
-                         running_max = cum_returns_plus_one.cummax()
-                         drawdowns = (cum_returns_plus_one - running_max) / running_max
-                         max_drawdown = float(drawdowns.min() * 100)
-                         
-                         ann_return_b = float(bench_daily.mean() * 252 * 100)
-                         ann_vol_b = float(bench_daily.std() * np.sqrt(252) * 100)
-                         sharpe_b = float((ann_return_b - 4.0) / ann_vol_b) if ann_vol_b > 0 else 0.0
-                         
-                         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                         col_m1.metric("Annualized Return", f"{ann_return_p:.1f}%", f"{ann_return_p - ann_return_b:+.1f}% vs Index")
-                         col_m2.metric("Annualized Volatility", f"{ann_vol_p:.1f}%", f"{ann_vol_p - ann_vol_b:+.1f}% vs Index", delta_color="inverse")
-                         col_m3.metric("Sharpe Ratio (Rf=4%)", f"{sharpe_p:.2f}", f"{sharpe_p - sharpe_b:+.2f} vs Index")
-                         col_m4.metric("Max Drawdown", f"{max_drawdown:.1f}%", help="Peak to valley drawdown")
-                         
-                         fig_df = pd.DataFrame({
-                             "Portfolio": cum_portfolio * 100,
-                             "S&P 500 Index": cum_benchmark * 100
-                         }, index=returns.index)
-                         
-                         fig_perf = px.line(fig_df, y=["Portfolio", "S&P 500 Index"], title="Cumulative Performance Comparison")
-                         fig_perf.update_layout(
-                             yaxis_title="Cumulative Return (%)",
-                             xaxis_title="Date",
-                             paper_bgcolor='rgba(0,0,0,0)',
-                             plot_bgcolor='rgba(0,0,0,0)',
-                             font={'color': "#e6edf3"}
-                         )
-                         st.plotly_chart(fig_perf, use_container_width=True)
+                    df_prices = yf.download(port_tickers, start=start_d, end=end_d)["Close"]
+                    df_benchmark = yf.download("^GSPC", start=start_d, end=end_d)["Close"]
+                    
+                    if df_prices.empty or df_benchmark.empty:
+                        st.error("Failed to download pricing data. Please check ticker symbols.")
+                    else:
+                        df_prices = df_prices.ffill().bfill()
+                        df_benchmark = df_benchmark.ffill().bfill()
+                        df_prices, df_benchmark = df_prices.align(df_benchmark, join='inner', axis=0)
+                        
+                        returns = df_prices.pct_change().dropna()
+                        bench_returns = df_benchmark.pct_change().dropna()
+                        
+                        # Sort weights to match alphabetically sorted columns
+                        sorted_tickers = sorted(port_tickers)
+                        w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
+                        
+                        portfolio_daily = returns.dot(w_vector)
+                        
+                        # Resolve single-column dataframes to 1D series
+                        if isinstance(portfolio_daily, pd.DataFrame):
+                            portfolio_daily = portfolio_daily.squeeze()
+                        if isinstance(bench_returns, pd.DataFrame):
+                            bench_daily = bench_returns.squeeze()
+                        else:
+                            bench_daily = bench_returns
+                            
+                        if isinstance(portfolio_daily, pd.DataFrame):
+                            portfolio_daily = portfolio_daily.iloc[:, 0]
+                        if isinstance(bench_daily, pd.DataFrame):
+                            bench_daily = bench_daily.iloc[:, 0]
+                            
+                        cum_portfolio = (1 + portfolio_daily).cumprod() - 1
+                        cum_benchmark = (1 + bench_daily).cumprod() - 1
+                        
+                        ann_return_p = float(portfolio_daily.mean() * 252 * 100)
+                        ann_vol_p = float(portfolio_daily.std() * np.sqrt(252) * 100)
+                        sharpe_p = float((ann_return_p - 4.0) / ann_vol_p) if ann_vol_p > 0 else 0.0
+                        
+                        cum_returns_plus_one = (1 + portfolio_daily).cumprod()
+                        running_max = cum_returns_plus_one.cummax()
+                        drawdowns = (cum_returns_plus_one - running_max) / running_max
+                        max_drawdown = float(drawdowns.min() * 100)
+                        
+                        ann_return_b = float(bench_daily.mean() * 252 * 100)
+                        ann_vol_b = float(bench_daily.std() * np.sqrt(252) * 100)
+                        sharpe_b = float((ann_return_b - 4.0) / ann_vol_b) if ann_vol_b > 0 else 0.0
+                        
+                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                        col_m1.metric("Annualized Return", f"{ann_return_p:.1f}%", f"{ann_return_p - ann_return_b:+.1f}% vs Index")
+                        col_m2.metric("Annualized Volatility", f"{ann_vol_p:.1f}%", f"{ann_vol_p - ann_vol_b:+.1f}% vs Index", delta_color="inverse")
+                        col_m3.metric("Sharpe Ratio (Rf=4%)", f"{sharpe_p:.2f}", f"{sharpe_p - sharpe_b:+.2f} vs Index")
+                        col_m4.metric("Max Drawdown", f"{max_drawdown:.1f}%", help="Peak to valley drawdown")
+                        
+                        fig_df = pd.DataFrame({
+                            "Portfolio": cum_portfolio * 100,
+                            "S&P 500 Index": cum_benchmark * 100
+                        }, index=returns.index)
+                        
+                        fig_perf = px.line(fig_df, y=["Portfolio", "S&P 500 Index"], title="Cumulative Performance Comparison")
+                        fig_perf.update_layout(
+                            yaxis_title="Cumulative Return (%)",
+                            xaxis_title="Date",
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            font={'color': "#e6edf3"}
+                        )
+                        st.plotly_chart(fig_perf, use_container_width=True)
+
+                        # --- Efficient Frontier Monte Carlo Simulation ---
+                        st.subheader("🕸️ Modern Portfolio Theory: Efficient Frontier")
+                        st.caption("Monte Carlo simulation (1,000 random portfolios) calculated using the asset covariance matrix.")
+                        
+                        num_portfolios = 1000
+                        mean_returns = returns.mean() * 252
+                        cov_matrix = returns.cov() * 252
+                        
+                        results = np.zeros((3, num_portfolios))
+                        weights_record = []
+                        
+                        for i in range(num_portfolios):
+                            w = np.random.random(len(port_tickers))
+                            w /= np.sum(w)
+                            weights_record.append(w)
+                            
+                            p_ret = np.sum(mean_returns * w)
+                            p_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+                            p_sharpe = (p_ret - 0.04) / p_vol if p_vol > 0 else 0.0
+                            
+                            results[0, i] = p_vol * 100
+                            results[1, i] = p_ret * 100
+                            results[2, i] = p_sharpe
+                            
+                        max_sharpe_idx = np.argmax(results[2])
+                        sd_min_vol_idx = np.argmin(results[0])
+                        
+                        max_sharpe_vol = results[0, max_sharpe_idx]
+                        max_sharpe_ret = results[1, max_sharpe_idx]
+                        max_sharpe_val = results[2, max_sharpe_idx]
+                        max_sharpe_w = weights_record[max_sharpe_idx]
+                        
+                        min_vol_vol = results[0, sd_min_vol_idx]
+                        min_vol_ret = results[1, sd_min_vol_idx]
+                        min_vol_sharpe = results[2, sd_min_vol_idx]
+                        min_vol_w = weights_record[sd_min_vol_idx]
+                        
+                        df_frontier = pd.DataFrame({
+                            "Volatility (%)": results[0],
+                            "Annualized Return (%)": results[1],
+                            "Sharpe Ratio": results[2]
+                        })
+                        
+                        fig_frontier = px.scatter(
+                            df_frontier, x="Volatility (%)", y="Annualized Return (%)", 
+                            color="Sharpe Ratio", color_continuous_scale="Viridis",
+                            title="Efficient Frontier Simulation"
+                        )
+                        
+                        fig_frontier.add_trace(go.Scatter(
+                            x=[max_sharpe_vol], y=[max_sharpe_ret],
+                            mode='markers', name='Max Sharpe Portfolio',
+                            marker=dict(color='#ff5722', size=14, symbol='star', line=dict(color='white', width=1.5))
+                        ))
+                        
+                        fig_frontier.add_trace(go.Scatter(
+                            x=[min_vol_vol], y=[min_vol_ret],
+                            mode='markers', name='Min Volatility Portfolio',
+                            marker=dict(color='#4caf50', size=14, symbol='diamond', line=dict(color='white', width=1.5))
+                        ))
+                        
+                        fig_frontier.update_layout(
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            font={'color': "#e6edf3"}
+                        )
+                        
+                        col_front_chart, col_front_weights = st.columns([2, 1])
+                        with col_front_chart:
+                            st.plotly_chart(fig_frontier, use_container_width=True)
+                            
+                        with col_front_weights:
+                            st.markdown("**Optimal Portfolio Allocations:**")
+                            st.markdown(f"🏆 **Max Sharpe Ratio Portfolio** (Sharpe: `{max_sharpe_val:.2f}`):")
+                            for idx, ticker in enumerate(sorted_tickers):
+                                st.write(f"- {ticker}: **{max_sharpe_w[idx]*100:.1f}%**")
+                                
+                            st.markdown(f"🛡️ **Minimum Volatility Portfolio** (Sharpe: `{min_vol_sharpe:.2f}`):")
+                            for idx, ticker in enumerate(sorted_tickers):
+                                st.write(f"- {ticker}: **{min_vol_w[idx]*100:.1f}%**")
                 except Exception as e:
-                     st.error(f"Backtesting error: {str(e)}")
+                    st.error(f"Backtesting error: {str(e)}")
         else:
-             st.info("Click 'Run Backtest Engine' on the left panel to execute simulation.")
-             pie_df = pd.DataFrame({
-                 "Asset": list(normalized_weights.keys()),
-                 "Weight": list(normalized_weights.values())
-             })
-             fig_pie = px.pie(pie_df, names="Asset", values="Weight", hole=0.35, title="Asset Allocation Mix")
-             fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
-             st.plotly_chart(fig_pie, use_container_width=True)
+            st.info("Click 'Run Backtest Engine' on the left panel to execute simulation.")
+            pie_df = pd.DataFrame({
+                "Asset": list(normalized_weights.keys()),
+                "Weight": list(normalized_weights.values())
+            })
+            fig_pie = px.pie(pie_df, names="Asset", values="Weight", hole=0.35, title="Asset Allocation Mix")
+            fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+            st.plotly_chart(fig_pie, use_container_width=True)
 
 # =====================================
 # TAB 4: SELF-SERVE PDF RAG
@@ -1244,3 +1514,143 @@ with tab_rag:
                 st.markdown(f"**Source {idx} — {comp}** (Vector L2 Distance: `{dist:.4f}`)")
                 st.text(txt[:600] + "...")
                 st.divider()
+
+# =====================================
+# TAB 6: COMPARABLE COMPANY ANALYSIS (CCA)
+# =====================================
+with tab_cca:
+    st.markdown(f"### 🏟️ Comparable Company Analysis (CCA): {active_data['name']}")
+    st.caption("Relative Valuation benchmarking the company against peer multipliers.")
+    
+    col_cca_input, col_cca_chart = st.columns([1, 2])
+    
+    with col_cca_input:
+        st.markdown("**1. Select Peers for Comparison**")
+        peer_tickers_input = st.text_input("Enter Peer Tickers (Comma-separated)", value="AAPL, MSFT, GOOGL, AMZN, META", key="cca_peers")
+        peer_tickers = [t.strip().upper() for t in peer_tickers_input.split(",") if t.strip()]
+        
+        run_cca = st.button("🚀 Execute Relative Valuation", use_container_width=True, key="run_cca_engine")
+        
+    if run_cca:
+        with st.spinner("Fetching peer metrics..."):
+            peer_data = []
+            for peer in peer_tickers:
+                try:
+                    p_ticker = yf.Ticker(peer)
+                    p_info = p_ticker.info
+                    peer_data.append({
+                        "Ticker": peer,
+                        "Name": p_info.get("longName") or p_info.get("shortName") or peer,
+                        "Trailing P/E": p_info.get("trailingPE"),
+                        "Forward P/E": p_info.get("forwardPE"),
+                        "Price / Sales": p_info.get("priceToSalesTrailing12Months"),
+                        "EV / EBITDA": p_info.get("enterpriseToEbitda")
+                    })
+                except Exception:
+                    pass
+                    
+            if not peer_data:
+                st.error("Could not fetch data for any of the peers. Please check the tickers.")
+            else:
+                df_peers = pd.DataFrame(peer_data)
+                st.markdown("**Peer Valuation Multiples Table:**")
+                st.dataframe(df_peers.style.format({
+                    "Trailing P/E": "{:,.2f}",
+                    "Forward P/E": "{:,.2f}",
+                    "Price / Sales": "{:,.2f}",
+                    "EV / EBITDA": "{:,.2f}"
+                }, na_rep="—"), use_container_width=True)
+                
+                # Fetch target EPS, Revenue per Share, EBITDA per Share
+                target_ticker = yf.Ticker(active_company)
+                target_info = target_ticker.info
+                
+                target_eps = target_info.get("trailingEps") or (active_data["net_income"] / active_data["shares"])
+                target_rev_per_share = (active_data["revenue"] / active_data["shares"])
+                
+                target_ebitda = target_info.get("ebitda") or (active_data["ebit"] * 1.2 * 1e9)
+                target_ebitda_per_share = (target_ebitda / 1e9) / active_data["shares"]
+                
+                # Calculate Peer Averages
+                avg_pe_trail = df_peers["Trailing P/E"].mean(skipna=True)
+                avg_pe_fwd = df_peers["Forward P/E"].mean(skipna=True)
+                avg_ps = df_peers["Price / Sales"].mean(skipna=True)
+                avg_evebitda = df_peers["EV / EBITDA"].mean(skipna=True)
+                
+                net_debt_per_share = (active_data["debt"] - active_data["cash"]) / active_data["shares"]
+                
+                # Implied share prices
+                implied_prices = {}
+                if pd.notna(avg_pe_trail) and target_eps:
+                    implied_prices["Trailing P/E"] = avg_pe_trail * target_eps
+                if pd.notna(avg_pe_fwd) and target_info.get("forwardEps"):
+                    implied_prices["Forward P/E"] = avg_pe_fwd * target_info["forwardEps"]
+                if pd.notna(avg_ps) and target_rev_per_share:
+                    implied_prices["Price / Sales"] = avg_ps * target_rev_per_share
+                if pd.notna(avg_evebitda) and target_ebitda_per_share:
+                    implied_prices["EV / EBITDA"] = (target_ebitda_per_share * avg_evebitda) - net_debt_per_share
+                    
+                st.markdown("#### Implied Relative Prices:")
+                implied_df = pd.DataFrame([
+                    {"Multiple Method": method, "Implied Value": round(val, 2)}
+                    for method, val in implied_prices.items()
+                ])
+                st.dataframe(implied_df, use_container_width=True)
+                
+                # Football Field Range Chart
+                fig_football = go.Figure()
+                
+                y_methods = list(implied_prices.keys())
+                
+                for idx, method in enumerate(y_methods):
+                    val = implied_prices[method]
+                    low_val = val * 0.85
+                    high_val = val * 1.15
+                    
+                    fig_football.add_trace(go.Bar(
+                        y=[method],
+                        x=[high_val - low_val],
+                        base=low_val,
+                        orientation='h',
+                        name=method,
+                        marker=dict(color='#58a6ff', opacity=0.8),
+                        hovertemplate=f"Range: ${low_val:.2f} - ${high_val:.2f}<br>Mid: ${val:.2f}"
+                    ))
+                    
+                    fig_football.add_trace(go.Scatter(
+                        y=[method],
+                        x=[val],
+                        mode='markers+text',
+                        text=[f"${val:.2f}"],
+                        textposition="top center",
+                        marker=dict(color='#bc8cff', size=10, symbol='diamond'),
+                        showlegend=False
+                    ))
+                    
+                curr_price = active_data["price"]
+                if curr_price:
+                    fig_football.add_vline(x=curr_price, line_width=2, line_dash="dash", line_color="#f85149")
+                    fig_football.add_annotation(
+                        x=curr_price, y=len(y_methods)-0.5,
+                        text=f"Current Price: ${curr_price:.2f}",
+                        showarrow=True, arrowhead=1,
+                        arrowcolor="#f85149", font=dict(color="#f85149")
+                    )
+                    
+                fig_football.update_layout(
+                    title="Valuation Football Field Range Comparison ($)",
+                    barmode='overlay',
+                    showlegend=False,
+                    xaxis_title="Implied Share Price ($)",
+                    yaxis_title="Valuation Methodology",
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font={'color': "#e6edf3"},
+                    height=300,
+                    margin=dict(t=50, b=20, l=20, r=20)
+                )
+                
+                with col_cca_chart:
+                    st.plotly_chart(fig_football, use_container_width=True)
+    else:
+        st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
