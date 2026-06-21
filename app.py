@@ -4,8 +4,11 @@ import pickle
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import yfinance as yf
 import re
 import json
+import ast
+import operator
 
 from collections import Counter
 from sentence_transformers import SentenceTransformer
@@ -61,8 +64,14 @@ def load_resources():
 embedding_model, index, chunks, vectors, positions_by_company, vectors_by_company = load_resources()
 companies = sorted(positions_by_company.keys())
 
+TICKERS = {
+    "NVIDIA": "NVDA",
+    "Microsoft": "MSFT",
+    "Reliance": "RELIANCE.NS"
+}
+
 # =====================================
-# QUERY UNDERSTANDING
+# QUERY UNDERSTANDING (used by Direct Analysis tab)
 # =====================================
 
 COMPANY_ALIASES = {
@@ -98,7 +107,7 @@ def target_companies(query):
     return []
 
 # =====================================
-# RETRIEVAL
+# RETRIEVAL (shared by both tabs)
 # =====================================
 
 def retrieve_for_company(query_vector, company, k):
@@ -125,6 +134,182 @@ def retrieve_context(query, query_vector):
     return [chunks[int(i)] for i in I[0] if 0 <= int(i) < len(chunks)]
 
 # =====================================
+# AGENT TOOLS
+# =====================================
+
+def tool_search_annual_report(company, query):
+    if company not in companies:
+        return {"error": f"Unknown company '{company}'. Valid options: {companies}"}
+
+    query_vector = embedding_model.encode([query]).astype("float32")
+    found = retrieve_for_company(query_vector, company, k=8)
+    return {"results": [c.get("text", "") for c in found]}
+
+
+@st.cache_data(ttl=300)
+def tool_get_live_market_data(company):
+    ticker_symbol = TICKERS.get(company)
+    if not ticker_symbol:
+        return {"error": f"No ticker mapped for '{company}'. Valid options: {list(TICKERS.keys())}"}
+
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+
+        return {
+            "ticker": ticker_symbol,
+            "currency": info.get("currency"),
+            "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+            "market_cap": info.get("marketCap"),
+            "trailing_pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": info.get("fiftyTwoWeekLow")
+        }
+
+    except Exception:
+        # Yahoo Finance occasionally rate-limits or changes its response shape -
+        # fall back to the lighter fast_info endpoint rather than failing outright
+        try:
+            fast = yf.Ticker(ticker_symbol).fast_info
+            return {
+                "ticker": ticker_symbol,
+                "currency": fast.get("currency"),
+                "current_price": fast.get("last_price"),
+                "market_cap": fast.get("market_cap"),
+                "fifty_two_week_high": fast.get("year_high"),
+                "fifty_two_week_low": fast.get("year_low")
+            }
+        except Exception as e:
+            return {"error": f"Live market data unavailable right now: {str(e)}"}
+
+
+SAFE_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg
+}
+
+
+def _safe_eval(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in SAFE_OPS:
+        return SAFE_OPS[type(node.op)](_safe_eval(node.left), _safe_eval(node.right))
+    if isinstance(node, ast.UnaryOp) and type(node.op) in SAFE_OPS:
+        return SAFE_OPS[type(node.op)](_safe_eval(node.operand))
+    raise ValueError("expression contains something other than numbers and + - * / ()")
+
+
+def tool_calculate(expression):
+    try:
+        tree = ast.parse(expression, mode="eval")
+        return {"result": _safe_eval(tree.body)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+TOOL_REGISTRY = {
+    "search_annual_report": tool_search_annual_report,
+    "get_live_market_data": tool_get_live_market_data,
+    "calculate": tool_calculate
+}
+
+AGENT_TOOLS = types.Tool(function_declarations=[
+    types.FunctionDeclaration(
+        name="search_annual_report",
+        description=(
+            "Search one company's FY25 annual report for qualitative or quantitative "
+            "information - strategy, risks, segments, or specific financial figures."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "company": {"type": "string", "enum": companies},
+                "query": {"type": "string", "description": "what to look for in the report"}
+            },
+            "required": ["company", "query"]
+        }
+    ),
+    types.FunctionDeclaration(
+        name="get_live_market_data",
+        description="Get current live stock price, market cap and valuation multiples (P/E) for a company.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "company": {"type": "string", "enum": companies}
+            },
+            "required": ["company"]
+        }
+    ),
+    types.FunctionDeclaration(
+        name="calculate",
+        description=(
+            "Evaluate a simple arithmetic expression, e.g. to compute a ratio like "
+            "'130.5 / 72.9' or a percentage change. Use this instead of doing math yourself."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string"}
+            },
+            "required": ["expression"]
+        }
+    )
+])
+
+
+def run_agent(query, max_steps=6):
+    system_text = (
+        "You are an equity research agent covering NVIDIA, Microsoft and Reliance. "
+        "You have three tools: search_annual_report (FY25 report content), "
+        "get_live_market_data (live price/market cap/P-E), and calculate (arithmetic). "
+        "Call whatever tools you need, in whatever order makes sense, before answering. "
+        "Never do arithmetic yourself - always call calculate for it. "
+        "Write the final answer in markdown with bold figures and bullet points, and say "
+        "which tool each fact came from."
+    )
+
+    contents = [types.Content(role="user", parts=[types.Part.from_text(text=f"{system_text}\n\nQuestion: {query}")])]
+    trace = []
+
+    for step in range(max_steps):
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(tools=[AGENT_TOOLS], temperature=0.2)
+        )
+
+        candidate = response.candidates[0]
+        contents.append(candidate.content)
+
+        function_calls = [p.function_call for p in candidate.content.parts if p.function_call]
+
+        if not function_calls:
+            return response.text or "", trace
+
+        response_parts = []
+
+        for fc in function_calls:
+            args = dict(fc.args or {})
+            handler = TOOL_REGISTRY.get(fc.name)
+            result = handler(**args) if handler else {"error": f"unknown tool '{fc.name}'"}
+
+            trace.append({"step": step + 1, "tool": fc.name, "args": args, "result": result})
+
+            response_parts.append(types.Part(function_response=types.FunctionResponse(
+                id=fc.id, name=fc.name, response=result
+            )))
+
+        contents.append(types.Content(role="user", parts=response_parts))
+
+    return "Hit the tool-call limit without a final answer - try a narrower question.", trace
+
+# =====================================
 # HEADER
 # =====================================
 
@@ -146,61 +331,61 @@ with col3:
 
 st.divider()
 
-# =====================================
-# QUICK EXAMPLES
-# =====================================
-
-st.markdown("**Try a comparison**")
-
-examples = [
-    "Compare revenue and net income across NVIDIA, Microsoft and Reliance",
-    "Compare R&D spending across all three companies",
-    "What is NVIDIA's revenue breakdown by segment?",
-    "What are the key risk factors for Reliance?"
-]
-
-example_cols = st.columns(4)
-for col, example in zip(example_cols, examples):
-    if col.button(example, width='stretch'):
-        st.session_state.query_text = example
-
-query = st.text_input("Ask a financial question", key="query_text")
+tab1, tab2 = st.tabs(["📊 Direct Analysis", "🤖 Agent Mode"])
 
 # =====================================
-# MAIN PIPELINE
+# TAB 1 - DIRECT ANALYSIS (RAG -> structured JSON -> table/charts)
 # =====================================
 
-if query:
+with tab1:
 
-    try:
+    st.markdown("**Try a comparison**")
 
-        with st.spinner("Analyzing reports..."):
+    examples = [
+        "Compare revenue and net income across NVIDIA, Microsoft and Reliance",
+        "Compare R&D spending across all three companies",
+        "What is NVIDIA's revenue breakdown by segment?",
+        "What are the key risk factors for Reliance?"
+    ]
 
-            query_vector = embedding_model.encode([query]).astype("float32")
+    example_cols = st.columns(4)
+    for col, example in zip(example_cols, examples):
+        if col.button(example, width='stretch'):
+            st.session_state.query_text = example
 
-            retrieved_chunks = retrieve_context(query, query_vector)
+    query = st.text_input("Ask a financial question", key="query_text")
 
-            companies_used = set()
-            context_parts = []
+    if query:
 
-            for i, chunk in enumerate(retrieved_chunks, start=1):
-                if isinstance(chunk, dict):
-                    company = chunk.get("company", "Unknown")
-                    text = chunk.get("text", "")
-                else:
-                    company = "Unknown"
-                    text = str(chunk)
+        try:
 
-                companies_used.add(company)
-                context_parts.append(f"[Source {i} | {company}]\n{text}")
+            with st.spinner("Analyzing reports..."):
 
-            if not context_parts:
-                st.error("No relevant information found.")
-                st.stop()
+                query_vector = embedding_model.encode([query]).astype("float32")
 
-            context = "\n\n".join(context_parts)
+                retrieved_chunks = retrieve_context(query, query_vector)
 
-            prompt = f"""
+                companies_used = set()
+                context_parts = []
+
+                for i, chunk in enumerate(retrieved_chunks, start=1):
+                    if isinstance(chunk, dict):
+                        company = chunk.get("company", "Unknown")
+                        text = chunk.get("text", "")
+                    else:
+                        company = "Unknown"
+                        text = str(chunk)
+
+                    companies_used.add(company)
+                    context_parts.append(f"[Source {i} | {company}]\n{text}")
+
+                if not context_parts:
+                    st.error("No relevant information found.")
+                    st.stop()
+
+                context = "\n\n".join(context_parts)
+
+                prompt = f"""
 You are a senior equity research analyst. You have been given excerpts from FY25 annual
 reports of NVIDIA, Microsoft and Reliance Industries.
 
@@ -241,157 +426,217 @@ Rules:
 - If a number isn't directly supported by the context, leave it out rather than estimating it.
 """
 
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.3
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.3
+                    )
                 )
-            )
 
-            raw = response.text.strip()
-            raw = re.sub(r"^```(json)?|```$", "", raw.strip()).strip()
+                raw = response.text.strip()
+                raw = re.sub(r"^```(json)?|```$", "", raw.strip()).strip()
 
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                data = None
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    data = None
 
-        # =====================================
-        # ANSWER
-        # =====================================
+            # ---------- answer ----------
 
-        if data is None:
-            st.subheader("📊 Financial Analysis")
-            st.warning("Couldn't parse a structured response this time, showing the raw answer instead.")
-            st.write(response.text)
+            if data is None:
+                st.subheader("📊 Financial Analysis")
+                st.warning("Couldn't parse a structured response this time, showing the raw answer instead.")
+                st.write(response.text)
 
-        else:
-            st.subheader("📊 Financial Analysis")
-            st.info(data.get("summary", ""))
+            else:
+                st.subheader("📊 Financial Analysis")
+                st.info(data.get("summary", ""))
 
-            findings = data.get("key_findings") or []
-            if findings:
-                st.markdown("**Key Findings**")
-                for finding in findings:
-                    st.markdown(f"- {finding}")
+                findings = data.get("key_findings") or []
+                if findings:
+                    st.markdown("**Key Findings**")
+                    for finding in findings:
+                        st.markdown(f"- {finding}")
 
-            # ---------- comparison table + chart ----------
+                # ---------- comparison table + chart ----------
 
-            table = data.get("comparison_table") or []
+                table = data.get("comparison_table") or []
 
-            if table:
-                df = pd.DataFrame(table)
+                if table:
+                    df = pd.DataFrame(table)
 
-                for col in ["metric", "company", "value", "unit"]:
-                    if col not in df.columns:
-                        df[col] = None
+                    for col in ["metric", "company", "value", "unit"]:
+                        if col not in df.columns:
+                            df[col] = None
 
-                df["value"] = pd.to_numeric(df["value"], errors="coerce")
-                df = df.dropna(subset=["value", "metric", "company"])
+                    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+                    df = df.dropna(subset=["value", "metric", "company"])
 
-                if not df.empty:
-                    df["unit"] = df["unit"].fillna("")
-                    df["metric_label"] = df["metric"] + df["unit"].apply(lambda u: f" ({u})" if u else "")
+                    if not df.empty:
+                        df["unit"] = df["unit"].fillna("")
+                        df["metric_label"] = df["metric"] + df["unit"].apply(lambda u: f" ({u})" if u else "")
 
-                    st.subheader("📋 Comparison Table")
-                    pivot = df.pivot_table(
-                        index="metric_label", columns="company", values="value", aggfunc="first"
-                    )
-                    st.dataframe(pivot.style.format("{:,.2f}", na_rep="—"), width='stretch')
-
-                    st.subheader("📊 Visual Comparison")
-
-                    n_panels = df["metric_label"].nunique()
-                    fig = px.bar(
-                        df, x="company", y="value", color="company",
-                        facet_col="metric_label", facet_col_wrap=3,
-                        text_auto=".2s"
-                    )
-                    # each metric keeps its own y-axis - NVIDIA/Microsoft (USD) and
-                    # Reliance (INR Crore) live on completely different scales
-                    fig.update_yaxes(matches=None)
-                    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-                    fig.update_layout(
-                        showlegend=False,
-                        height=320 * ((n_panels - 1) // 3 + 1)
-                    )
-                    st.plotly_chart(fig, width='stretch')
-
-                    if df["unit"].nunique() > 1:
-                        st.caption(
-                            "Each panel uses the currency/unit as reported - NVIDIA and Microsoft "
-                            "report in USD, Reliance reports in INR Crore, so bars are only "
-                            "directly comparable within the same panel."
+                        st.subheader("📋 Comparison Table")
+                        pivot = df.pivot_table(
+                            index="metric_label", columns="company", values="value", aggfunc="first"
                         )
+                        st.dataframe(pivot.style.format("{:,.2f}", na_rep="—"), width='stretch')
 
-            # ---------- segment breakdown pies ----------
+                        st.subheader("📊 Visual Comparison")
 
-            segments = data.get("segment_breakdown") or []
+                        n_panels = df["metric_label"].nunique()
+                        fig = px.bar(
+                            df, x="company", y="value", color="company",
+                            facet_col="metric_label", facet_col_wrap=3,
+                            text_auto=".2s"
+                        )
+                        # each metric keeps its own y-axis - NVIDIA/Microsoft (USD) and
+                        # Reliance (INR Crore) live on completely different scales
+                        fig.update_yaxes(matches=None)
+                        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+                        fig.update_layout(
+                            showlegend=False,
+                            height=320 * ((n_panels - 1) // 3 + 1)
+                        )
+                        st.plotly_chart(fig, width='stretch')
 
-            if segments:
-                seg_df = pd.DataFrame(segments)
+                        if df["unit"].nunique() > 1:
+                            st.caption(
+                                "Each panel uses the currency/unit as reported - NVIDIA and Microsoft "
+                                "report in USD, Reliance reports in INR Crore, so bars are only "
+                                "directly comparable within the same panel."
+                            )
 
-                for col in ["segment", "company", "value"]:
-                    if col not in seg_df.columns:
-                        seg_df[col] = None
+                # ---------- segment breakdown pies ----------
 
-                seg_df["value"] = pd.to_numeric(seg_df["value"], errors="coerce")
-                seg_df = seg_df.dropna(subset=["value", "segment", "company"])
+                segments = data.get("segment_breakdown") or []
 
-                if not seg_df.empty:
-                    st.subheader("🥧 Segment Breakdown")
-                    seg_companies = seg_df["company"].unique()
-                    pie_cols = st.columns(len(seg_companies))
+                if segments:
+                    seg_df = pd.DataFrame(segments)
 
-                    for pie_col, company in zip(pie_cols, seg_companies):
-                        g = seg_df[seg_df["company"] == company]
-                        pie = px.pie(g, names="segment", values="value", title=company, hole=0.35)
-                        pie.update_traces(textinfo="percent+label", showlegend=False)
-                        pie_col.plotly_chart(pie, width='stretch')
+                    for col in ["segment", "company", "value"]:
+                        if col not in seg_df.columns:
+                            seg_df[col] = None
 
-            # ---------- risks ----------
+                    seg_df["value"] = pd.to_numeric(seg_df["value"], errors="coerce")
+                    seg_df = seg_df.dropna(subset=["value", "segment", "company"])
 
-            risks = data.get("risks") or []
-            if risks:
-                st.subheader("⚠️ Risks Mentioned")
-                for risk in risks:
-                    st.warning(risk)
+                    if not seg_df.empty:
+                        st.subheader("🥧 Segment Breakdown")
+                        seg_companies = seg_df["company"].unique()
+                        pie_cols = st.columns(len(seg_companies))
 
-        # =====================================
-        # SOURCES
-        # =====================================
+                        for pie_col, company in zip(pie_cols, seg_companies):
+                            g = seg_df[seg_df["company"] == company]
+                            pie = px.pie(g, names="segment", values="value", title=company, hole=0.35)
+                            pie.update_traces(textinfo="percent+label", showlegend=False)
+                            pie_col.plotly_chart(pie, width='stretch')
 
-        st.subheader("📚 Companies Referenced")
-        st.write(" • ".join(sorted(companies_used)))
+                # ---------- risks ----------
 
-        with st.expander("View retrieved source chunks"):
-            for i, chunk in enumerate(retrieved_chunks, start=1):
-                company = chunk.get("company", "Unknown") if isinstance(chunk, dict) else "Unknown"
-                text = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
-                st.markdown(f"**Source {i} — {company}**")
-                st.text(text[:500])
+                risks = data.get("risks") or []
+                if risks:
+                    st.subheader("⚠️ Risks Mentioned")
+                    for risk in risks:
+                        st.warning(risk)
 
-        # =====================================
-        # THEMES CHART
-        # =====================================
+            # ---------- sources ----------
 
-        words = re.findall(r"\b[a-zA-Z]{4,}\b", context.lower())
+            st.subheader("📚 Companies Referenced")
+            st.write(" • ".join(sorted(companies_used)))
 
-        stopwords = {
-            "company", "revenue", "income", "would", "could", "their", "there",
-            "which", "these", "those", "about", "after", "before", "other",
-            "using", "from", "have", "been", "were", "with"
-        }
+            with st.expander("View retrieved source chunks"):
+                for i, chunk in enumerate(retrieved_chunks, start=1):
+                    company = chunk.get("company", "Unknown") if isinstance(chunk, dict) else "Unknown"
+                    text = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
+                    st.markdown(f"**Source {i} — {company}**")
+                    st.text(text[:500])
 
-        words = [w for w in words if w not in stopwords]
-        top_words = Counter(words).most_common(10)
+            # ---------- themes chart ----------
 
-        if top_words:
-            with st.expander("📈 Key Terms in Retrieved Context"):
-                theme_df = pd.DataFrame(top_words, columns=["Keyword", "Frequency"])
-                st.bar_chart(theme_df.set_index("Keyword"))
+            words = re.findall(r"\b[a-zA-Z]{4,}\b", context.lower())
 
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+            stopwords = {
+                "company", "revenue", "income", "would", "could", "their", "there",
+                "which", "these", "those", "about", "after", "before", "other",
+                "using", "from", "have", "been", "were", "with"
+            }
+
+            words = [w for w in words if w not in stopwords]
+            top_words = Counter(words).most_common(10)
+
+            if top_words:
+                with st.expander("📈 Key Terms in Retrieved Context"):
+                    theme_df = pd.DataFrame(top_words, columns=["Keyword", "Frequency"])
+                    st.bar_chart(theme_df.set_index("Keyword"))
+
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+
+# =====================================
+# TAB 2 - AGENT MODE (tool use: report search + live market data + calculator)
+# =====================================
+
+with tab2:
+
+    st.markdown(
+        "Ask something that might need live market data, multiple lookups, or a calculation - "
+        "the agent decides which tools to call and in what order."
+    )
+
+    agent_examples = [
+        "Is NVIDIA fairly valued compared to Microsoft based on their P/E ratios?",
+        "What is Reliance's current market cap vs its FY25 revenue?",
+        "How far is NVIDIA's live stock price from its 52-week high?"
+    ]
+
+    agent_cols = st.columns(3)
+    for col, example in zip(agent_cols, agent_examples):
+        if col.button(example, width='stretch', key=f"agent_{example}"):
+            st.session_state.agent_query_text = example
+
+    agent_query = st.text_input("Ask the agent", key="agent_query_text")
+
+    if agent_query:
+
+        try:
+
+            with st.spinner("Agent is working..."):
+                answer, trace = run_agent(agent_query)
+
+            if trace:
+                st.subheader("🔧 Agent Trace")
+                for t in trace:
+                    with st.expander(f"Step {t['step']}: called `{t['tool']}`"):
+                        st.json(t["args"])
+                        st.json(t["result"])
+
+            market_calls = [
+                t for t in trace
+                if t["tool"] == "get_live_market_data" and "error" not in t["result"]
+            ]
+
+            if market_calls:
+                st.subheader("📡 Live Market Snapshot")
+                snap_cols = st.columns(len(market_calls))
+
+                for snap_col, t in zip(snap_cols, market_calls):
+                    r = t["result"]
+                    company = t["args"].get("company", r.get("ticker", "?"))
+                    price = r.get("current_price")
+                    currency = r.get("currency") or ""
+                    pe = r.get("trailing_pe")
+
+                    snap_col.metric(
+                        f"{company} ({r.get('ticker', '')})",
+                        f"{currency} {price:,.2f}" if price else "—",
+                        f"P/E {pe:.1f}" if pe else None
+                    )
+
+            st.subheader("📋 Answer")
+            st.markdown(answer)
+
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
