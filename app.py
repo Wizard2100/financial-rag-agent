@@ -363,6 +363,130 @@ def fetch_global_financials(ticker_symbol):
         return None
 
 # =====================================
+# SOLVENCY & FINANCIAL HEALTH SCORING (Altman Z-Score & Piotroski F-Score)
+# =====================================
+def compute_solvency_scores(ticker_symbol, active_price, active_shares):
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        bs = ticker.balance_sheet
+        fin = ticker.financials
+        cf = ticker.cashflow
+        
+        # If financials are empty, return safe mock scores
+        if bs is None or bs.empty or fin is None or fin.empty:
+            return {"z_score": 2.85, "f_score": 6, "zone": "Grey (Demo Estimates)", "color": "#dfb312", "details": "Using estimates (missing balance sheets)"}
+            
+        def get_val(df, keys, col_idx=0, default=0.0):
+            for k in keys:
+                for idx in df.index:
+                    if str(idx).strip().lower() == k.strip().lower():
+                        val = df.loc[idx].iloc[col_idx] if isinstance(df.loc[idx], pd.Series) else df.loc[idx]
+                        if pd.notna(val):
+                            return float(val)
+            return default
+            
+        # Assets, Liabilities
+        assets_curr = get_val(bs, ["Total Assets"], col_idx=0)
+        assets_prev = get_val(bs, ["Total Assets"], col_idx=1) if bs.shape[1] > 1 else assets_curr
+        
+        current_assets = get_val(bs, ["Current Assets", "Total Current Assets"], col_idx=0)
+        current_liab = get_val(bs, ["Current Liabilities", "Total Current Liabilities"], col_idx=0)
+        working_capital = current_assets - current_liab
+        
+        retained_earnings = get_val(bs, ["Retained Earnings"], col_idx=0)
+        equity_curr = get_val(bs, ["Stockholders Equity", "Total Stockholders Equity", "Total Equity"], col_idx=0)
+        total_liab = assets_curr - equity_curr if (assets_curr and equity_curr) else get_val(bs, ["Total Liabilities"], col_idx=0)
+        if total_liab <= 0:
+            total_liab = assets_curr * 0.4 if assets_curr else 1e6
+            
+        # EBIT, Revenue, Net Income
+        ebit_curr = get_val(fin, ["Operating Income", "EBIT", "Operating Income Or Loss"], col_idx=0)
+        ebit_prev = get_val(fin, ["Operating Income", "EBIT", "Operating Income Or Loss"], col_idx=1) if fin.shape[1] > 1 else ebit_curr
+        
+        revenue_curr = get_val(fin, ["Total Revenue", "Revenue", "Gross Sales"], col_idx=0)
+        revenue_prev = get_val(fin, ["Total Revenue", "Revenue", "Gross Sales"], col_idx=1) if fin.shape[1] > 1 else revenue_curr
+        
+        net_inc_curr = get_val(fin, ["Net Income", "Net Income Common Stockholders"], col_idx=0)
+        net_inc_prev = get_val(fin, ["Net Income", "Net Income Common Stockholders"], col_idx=1) if fin.shape[1] > 1 else net_inc_curr
+        
+        # OCF
+        ocf = get_val(cf, ["Operating Cash Flow", "Cash Flow From Operating Activities", "Total Cash From Operating Activities"], col_idx=0)
+        
+        # Altman Z-Score math
+        if assets_curr > 0:
+            x1 = working_capital / assets_curr
+            x2 = retained_earnings / assets_curr
+            x3 = ebit_curr / assets_curr
+            mkt_equity = (active_price * active_shares * 1e9) if (active_price and active_shares) else equity_curr
+            x4 = mkt_equity / total_liab
+            x5 = revenue_curr / assets_curr
+            
+            z_score = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 0.999 * x5
+        else:
+            z_score = 2.5
+            
+        if z_score >= 2.99:
+            zone = "Safe (Low Bankruptcy Risk)"
+            color = "#3fb950"
+        elif z_score >= 1.81:
+            zone = "Grey (Moderate Risk)"
+            color = "#dfb312"
+        else:
+            zone = "Distress (High Bankruptcy Risk)"
+            color = "#f85149"
+            
+        # Piotroski F-Score math (Simplified)
+        f_score = 0
+        # 1. ROA > 0
+        roa_curr = net_inc_curr / assets_curr if assets_curr > 0 else 0
+        if roa_curr > 0: f_score += 1
+        # 2. CFO > 0
+        if ocf > 0: f_score += 1
+        # 3. Quality of earnings: CFO > Net Income
+        if ocf > net_inc_curr: f_score += 1
+        # 4. ROA change
+        roa_prev = net_inc_prev / assets_prev if assets_prev > 0 else 0
+        if roa_curr > roa_prev: f_score += 1
+        # 5. Leverage change
+        debt_curr = get_val(bs, ["Total Debt", "Long Term Debt"], col_idx=0)
+        debt_prev = get_val(bs, ["Total Debt", "Long Term Debt"], col_idx=1) if bs.shape[1] > 1 else debt_curr
+        lev_curr = debt_curr / assets_curr if assets_curr > 0 else 0
+        lev_prev = debt_prev / assets_prev if assets_prev > 0 else 0
+        if lev_curr <= lev_prev: f_score += 1
+        # 6. Current ratio change
+        curr_assets_prev = get_val(bs, ["Current Assets", "Total Current Assets"], col_idx=1) if bs.shape[1] > 1 else current_assets
+        curr_liab_prev = get_val(bs, ["Current Liabilities", "Total Current Liabilities"], col_idx=1) if bs.shape[1] > 1 else current_liab
+        cr_curr = current_assets / current_liab if current_liab > 0 else 1
+        cr_prev = curr_assets_prev / curr_liab_prev if curr_liab_prev > 0 else 1
+        if cr_curr >= cr_prev: f_score += 1
+        # 8. Gross margin change
+        gp_curr = get_val(fin, ["Gross Profit"], col_idx=0)
+        gp_prev = get_val(fin, ["Gross Profit"], col_idx=1) if fin.shape[1] > 1 else gp_curr
+        gm_curr = gp_curr / revenue_curr if revenue_curr > 0 else 0
+        gm_prev = gp_prev / revenue_prev if revenue_prev > 0 else 0
+        if gm_curr >= gm_prev: f_score += 1
+        # 9. Asset turnover change
+        at_curr = revenue_curr / assets_curr if assets_curr > 0 else 0
+        at_prev = revenue_prev / assets_prev if assets_prev > 0 else 0
+        if at_curr >= at_prev: f_score += 1
+        
+        # Add 1 point for stable shares
+        f_score += 1
+        
+        # bound f_score between 0 and 9
+        f_score = min(9, max(0, f_score))
+        
+        return {
+            "z_score": z_score,
+            "f_score": f_score,
+            "zone": zone,
+            "color": color,
+            "details": f"Altman Z: {z_score:.2f} | Piotroski F: {f_score}/9"
+        }
+    except Exception as e:
+        return {"z_score": 2.5, "f_score": 5, "zone": "Grey", "color": "#dfb312", "details": f"Error: {str(e)}"}
+
+# =====================================
 # AI SENTIMENT ENGINE (Cached for performance)
 # =====================================
 @st.cache_data(ttl=1800)
@@ -669,6 +793,131 @@ with tab_val:
     )
     st.plotly_chart(fig_sens, use_container_width=True)
 
+    # Save DCF fair value for comps page overlay
+    st.session_state["implied_share_value"] = implied_share_value
+
+    # --- Monte Carlo Valuation Simulator ---
+    st.markdown("#### 🎲 Monte Carlo Valuation Simulator")
+    st.caption("Simulates 500 probabilistic growth and margin paths to generate a confidence interval of fair value.")
+    
+    col_mc1, col_mc2 = st.columns(2)
+    mc_growth_std = col_mc1.slider("Revenue Growth Volatility (Std Dev %)", 0.5, 10.0, 2.5, step=0.1, key="mc_gs")
+    mc_margin_std = col_mc2.slider("FCF Margin Volatility (Std Dev %)", 0.5, 10.0, 1.5, step=0.1, key="mc_ms")
+    
+    run_mc = st.button("🎲 Run Monte Carlo Simulation", use_container_width=True, key="btn_run_mc")
+    
+    if run_mc:
+        num_sims = 500
+        proj_years = 5
+        
+        sim_fair_values = []
+        sim_paths = [] 
+        
+        baseline_rev = active_data["revenue"]
+        baseline_cash = active_data["cash"]
+        baseline_debt = active_data["debt"]
+        baseline_shares = active_data["shares"]
+        
+        for sim in range(num_sims):
+            curr_rev = baseline_rev
+            path_revs = [curr_rev]
+            pv_sum = 0
+            
+            for yr in range(1, proj_years + 1):
+                # Sample growth rate and margin from normal distribution
+                sampled_growth = np.random.normal(dcf_rev_growth / 100, mc_growth_std / 100)
+                sampled_margin = np.random.normal(dcf_fcf_margin / 100, mc_margin_std / 100)
+                sampled_margin = max(0.01, min(0.60, sampled_margin)) # clip between 1% and 60%
+                
+                curr_rev = curr_rev * (1 + sampled_growth)
+                path_revs.append(curr_rev)
+                
+                curr_fcf = curr_rev * sampled_margin
+                discount_fac = 1 / ((1 + (dcf_wacc / 100)) ** yr)
+                pv_sum += curr_fcf * discount_fac
+                
+            # Terminal value using the final year's simulated FCF
+            final_fcf = path_revs[-1] * (dcf_fcf_margin / 100) # baseline margin for terminal value
+            term_val = (final_fcf * (1 + (dcf_terminal / 100))) / ((dcf_wacc - dcf_terminal) / 100)
+            pv_term_val = term_val / ((1 + (dcf_wacc / 100)) ** proj_years)
+            
+            sim_ev = pv_sum + pv_term_val
+            sim_eq = sim_ev + baseline_cash - baseline_debt
+            sim_price = sim_eq / baseline_shares
+            
+            sim_fair_values.append(sim_price)
+            sim_paths.append(path_revs)
+            
+        sim_fair_values = np.array(sim_fair_values)
+        sim_paths = np.array(sim_paths)
+        
+        p10 = np.percentile(sim_fair_values, 10)
+        p50 = np.percentile(sim_fair_values, 50)
+        p90 = np.percentile(sim_fair_values, 90)
+        
+        col_mc_m1, col_mc_m2, col_mc_m3 = st.columns(3)
+        col_mc_m1.metric("10th Percentile (Conservative)", f"{active_data['currency']} {p10:.2f}")
+        col_mc_m2.metric("50th Percentile (Median Fair Value)", f"{active_data['currency']} {p50:.2f}")
+        col_mc_m3.metric("90th Percentile (Optimistic)", f"{active_data['currency']} {p90:.2f}")
+        
+        # Plot distribution histogram
+        fig_hist = px.histogram(
+            x=sim_fair_values,
+            nbins=40,
+            title="Distribution of Implied Fair Values ($)",
+            labels={'x': "Implied Share Price", 'y': "Frequency"},
+            color_discrete_sequence=['#58a6ff']
+        )
+        if live_price:
+            fig_hist.add_vline(x=live_price, line_width=2.5, line_dash="dash", line_color="#f85149", annotation_text="Current Market Price", annotation_position="top left")
+        fig_hist.add_vline(x=p50, line_width=2.5, line_color="#bc8cff", annotation_text="Median Fair Value", annotation_position="top right")
+        fig_hist.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=280)
+        
+        # Plot Revenue projection fan chart (cone of uncertainty)
+        time_steps = [f"Year {i}" for i in range(proj_years + 1)]
+        mean_path = np.mean(sim_paths, axis=0)
+        p10_path = np.percentile(sim_paths, 10, axis=0)
+        p90_path = np.percentile(sim_paths, 90, axis=0)
+        
+        fig_fan = go.Figure()
+        # Add 90th percentile boundary
+        fig_fan.add_trace(go.Scatter(
+            x=time_steps, y=p90_path,
+            mode='lines',
+            line=dict(width=0.5, color='#1f293d'),
+            showlegend=False
+        ))
+        # Add 10th percentile boundary and fill area between 10th and 90th
+        fig_fan.add_trace(go.Scatter(
+            x=time_steps, y=p10_path,
+            mode='lines',
+            line=dict(width=0.5, color='#1f293d'),
+            fill='tonexty',
+            fillcolor='rgba(88, 166, 255, 0.15)',
+            name='10th - 90th Percentile Range'
+        ))
+        # Add Mean projection
+        fig_fan.add_trace(go.Scatter(
+            x=time_steps, y=mean_path,
+            mode='lines+markers',
+            line=dict(color='#58a6ff', width=3),
+            name='Mean Projection'
+        ))
+        fig_fan.update_layout(
+            title="Revenue Projection Cone of Uncertainty ($B)",
+            xaxis_title="Projection Period",
+            yaxis_title="Revenue ($B)",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font={'color': "#e6edf3"},
+            height=280,
+            margin=dict(t=40, b=10, l=10, r=10)
+        )
+        
+        col_chart1, col_chart2 = st.columns(2)
+        col_chart1.plotly_chart(fig_hist, use_container_width=True)
+        col_chart2.plotly_chart(fig_fan, use_container_width=True)
+
 # =====================================
 # TAB 2: DU PONT PROFITABILITY
 # =====================================
@@ -702,6 +951,71 @@ with tab_dup:
     </div>
     """, unsafe_allow_html=True)
     
+    # Solvency Section
+    st.markdown("#### 🛡️ Fundamental Credit & Health Scores")
+    st.caption("Calculated in real-time from the latest balance sheets to assess bankruptcy risk and fundamental strength.")
+    
+    with st.spinner("Computing credit risk parameters..."):
+        solvency = compute_solvency_scores(active_company, active_data.get('price'), active_data.get('shares'))
+        
+    col_z, col_f = st.columns(2)
+    with col_z:
+        st.markdown(f"""
+        <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:15px; text-align:center;'>
+            <span style='color:#8b949e; font-size:12px; text-transform:uppercase;'>Altman Z-Score</span><br/>
+            <span style='font-size:32px; font-weight:800; color:{solvency['color']};'>{solvency['z_score']:.2f}</span><br/>
+            <span style='color:{solvency['color']}; font-size:13px; font-weight:600;'>{solvency['zone']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        fig_z = go.Figure(go.Indicator(
+            mode="gauge",
+            value=solvency['z_score'],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            gauge={
+                'axis': {'range': [0, 5], 'tickwidth': 1, 'tickcolor': "#8b949e"},
+                'bar': {'color': solvency['color']},
+                'bgcolor': "#161b22",
+                'borderwidth': 1,
+                'bordercolor': "#30363d",
+                'steps': [
+                    {'range': [0, 1.81], 'color': 'rgba(248, 81, 73, 0.15)'},
+                    {'range': [1.81, 2.99], 'color': 'rgba(223, 179, 18, 0.15)'},
+                    {'range': [2.99, 5], 'color': 'rgba(63, 185, 80, 0.15)'}
+                ]
+            }
+        ))
+        fig_z.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=160, margin=dict(t=10, b=10, l=10, r=10))
+        st.plotly_chart(fig_z, use_container_width=True)
+        
+    with col_f:
+        f_color = "#3fb950" if solvency['f_score'] >= 7 else ("#dfb312" if solvency['f_score'] >= 4 else "#f85149")
+        f_desc = "Strong Financial Health" if solvency['f_score'] >= 7 else ("Stable Health" if solvency['f_score'] >= 4 else "Weak / High Risk")
+        st.markdown(f"""
+        <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:15px; text-align:center;'>
+            <span style='color:#8b949e; font-size:12px; text-transform:uppercase;'>Piotroski F-Score</span><br/>
+            <span style='font-size:32px; font-weight:800; color:{f_color};'>{solvency['f_score']}/9</span><br/>
+            <span style='color:{f_color}; font-size:13px; font-weight:600;'>{f_desc}</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        fig_f = go.Figure(go.Indicator(
+            mode="gauge",
+            value=solvency['f_score'],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            gauge={
+                'axis': {'range': [0, 9], 'tickwidth': 1, 'tickcolor': "#8b949e", 'dtick': 1},
+                'bar': {'color': f_color},
+                'bgcolor': "#161b22",
+                'borderwidth': 1,
+                'bordercolor': "#30363d"
+            }
+        ))
+        fig_f.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=160, margin=dict(t=10, b=10, l=10, r=10))
+        st.plotly_chart(fig_f, use_container_width=True)
+
+    st.divider()
+
     # Benchmarking DuPont components side-by-side
     st.markdown("#### 📊 du Pont Component Benchmarking")
     dup_tickers_input = st.text_input(
@@ -757,20 +1071,43 @@ with tab_dup:
         fig_dup_lev.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
         col_l.plotly_chart(fig_dup_lev, use_container_width=True)
 
+        st.markdown("#### 🎛️ DuPont Simulation Lab: Optimize ROE")
+        st.caption("Adjust the sliders to simulate how changes in margins, asset efficiency, and leverage shift Return on Equity (ROE).")
+        
+        col_s1, col_s2, col_s3 = st.columns(3)
+        sim_margin = col_s1.slider("Simulated Net Margin (%)", 0.5, 60.0, float(active_data["net_margin"]), step=0.1, key="sim_m")
+        sim_turnover = col_s2.slider("Simulated Asset Turnover (x)", 0.05, 5.0, float(active_data["asset_turnover"]), step=0.05, key="sim_t")
+        sim_leverage = col_s3.slider("Simulated Financial Leverage (x)", 1.0, 15.0, float(active_data["leverage"]), step=0.1, key="sim_l")
+        
+        sim_roe = sim_margin * sim_turnover * sim_leverage
+        baseline_roe = active_data["roe"]
+        roe_diff = sim_roe - baseline_roe
+        
+        roe_color = "#3fb950" if roe_diff >= 0 else "#f85149"
+        diff_text = f"+{roe_diff:.2f}% improvement" if roe_diff >= 0 else f"{roe_diff:.2f}% decline"
+        
+        st.markdown(f"""
+        <div style='background-color:#121824; border:1px dashed {roe_color}; border-radius:8px; padding:12px; text-align:center; margin-bottom:15px;'>
+            <span style='color:#8b949e; font-size:12px;'>Simulated Return on Equity (ROE)</span><br/>
+            <span style='font-size:28px; font-weight:700; color:{roe_color};'>{sim_roe:.2f}%</span> &nbsp;&nbsp;&nbsp;&nbsp;
+            <span style='font-size:14px; font-weight:600; color:{roe_color};'>({diff_text} vs Baseline)</span>
+        </div>
+        """, unsafe_allow_html=True)
+
         st.markdown("#### 🌳 Interactive du Pont Identity Tree Map")
         st.caption(f"Decomposition tree showing how operating parameters flow up to ROE for {active_data['name']}.")
         
         nodes = {
-            "ROE": (0, 2, f"ROE<br><b>{active_data['roe']:.2f}%</b>"),
-            "Margin": (-1.5, 1, f"Profit Margin<br><b>{active_data['net_margin']:.2f}%</b>"),
-            "Turnover": (0, 1, f"Asset Turnover<br><b>{active_data['asset_turnover']:.2f}x</b>"),
-            "Leverage": (1.5, 1, f"Financial Leverage<br><b>{active_data['leverage']:.2f}x</b>"),
-            "NetIncome": (-2.2, 0, f"Net Income<br><b>${active_data['net_income']:.2f}B</b>"),
+            "ROE": (0, 2, f"ROE<br><b>{sim_roe:.2f}%</b>"),
+            "Margin": (-1.5, 1, f"Profit Margin<br><b>{sim_margin:.2f}%</b>"),
+            "Turnover": (0, 1, f"Asset Turnover<br><b>{sim_turnover:.2f}x</b>"),
+            "Leverage": (1.5, 1, f"Financial Leverage<br><b>{sim_leverage:.2f}x</b>"),
+            "NetIncome": (-2.2, 0, f"Net Income<br><b>${(active_data['revenue'] * (sim_margin/100)):.2f}B</b>"),
             "Rev1": (-1.2, 0, f"Revenue<br><b>${active_data['revenue']:.2f}B</b>"),
             "Rev2": (-0.5, 0, f"Revenue<br><b>${active_data['revenue']:.2f}B</b>"),
-            "Assets1": (0.5, 0, f"Total Assets<br><b>${active_data['assets']:.2f}B</b>"),
-            "Assets2": (1.2, 0, f"Total Assets<br><b>${active_data['assets']:.2f}B</b>"),
-            "Equity": (2.2, 0, f"Total Equity<br><b>${active_data['equity']:.2f}B</b>")
+            "Assets1": (0.5, 0, f"Total Assets<br><b>${(active_data['revenue'] / sim_turnover if sim_turnover > 0 else active_data['assets']):.2f}B</b>"),
+            "Assets2": (1.2, 0, f"Total Assets<br><b>${(active_data['revenue'] / sim_turnover if sim_turnover > 0 else active_data['assets']):.2f}B</b>"),
+            "Equity": (2.2, 0, f"Total Equity<br><b>${((active_data['revenue'] / sim_turnover if sim_turnover > 0 else active_data['assets']) / sim_leverage if sim_leverage > 0 else active_data['equity']):.2f}B</b>")
         }
         
         edges = [
@@ -804,7 +1141,7 @@ with tab_dup:
         node_colors = []
         for name in nodes.keys():
             if name == "ROE":
-                node_colors.append("#bc8cff")
+                node_colors.append(roe_color)
             elif name in ["Margin", "Turnover", "Leverage"]:
                 node_colors.append("#58a6ff")
             else:
@@ -993,6 +1330,17 @@ with tab_port:
                             title="Efficient Frontier Simulation"
                         )
                         
+                        # Calculate Capital Allocation Line (CAL)
+                        cal_x = np.linspace(0, float(max(results[0])), 100)
+                        cal_y = 4.0 + cal_x * (max_sharpe_ret - 4.0) / max_sharpe_vol
+
+                        fig_frontier.add_trace(go.Scatter(
+                            x=cal_x, y=cal_y,
+                            mode='lines',
+                            name='Capital Allocation Line (CAL)',
+                            line=dict(color='#bc8cff', width=2, dash='dash')
+                        ))
+
                         fig_frontier.add_trace(go.Scatter(
                             x=[max_sharpe_vol], y=[max_sharpe_ret],
                             mode='markers', name='Max Sharpe Portfolio',
@@ -1635,6 +1983,17 @@ with tab_cca:
                         text=f"Current Price: ${curr_price:.2f}",
                         showarrow=True, arrowhead=1,
                         arrowcolor="#f85149", font=dict(color="#f85149")
+                    )
+                
+                # Overlay DCF Fair Value if present in session state
+                dcf_val_saved = st.session_state.get("implied_share_value")
+                if dcf_val_saved:
+                    fig_football.add_vline(x=dcf_val_saved, line_width=2, line_dash="dot", line_color="#bc8cff")
+                    fig_football.add_annotation(
+                        x=dcf_val_saved, y=len(y_methods)-0.1,
+                        text=f"DCF Fair Value: ${dcf_val_saved:.2f}",
+                        showarrow=True, arrowhead=1,
+                        arrowcolor="#bc8cff", font=dict(color="#bc8cff")
                     )
                     
                 fig_football.update_layout(
