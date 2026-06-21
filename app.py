@@ -226,8 +226,9 @@ def get_search_suggestions(query):
         ]
         
     query_clean = query.strip()
+    query_lower = query_clean.lower()
     
-    # Pre-populate some exact popular queries to save API call and look polished
+    # Pre-populate popular presets to avoid API latency and handle private/public mappings
     popular_presets = {
         "microsoft": [{"symbol": "MSFT", "name": "Microsoft Corporation"}],
         "nvidia": [{"symbol": "NVDA", "name": "NVIDIA Corporation"}],
@@ -236,42 +237,60 @@ def get_search_suggestions(query):
         "tesla": [{"symbol": "TSLA", "name": "Tesla, Inc."}],
         "google": [{"symbol": "GOOGL", "name": "Alphabet Inc. (Google)"}],
         "amazon": [{"symbol": "AMZN", "name": "Amazon.com, Inc."}],
+        "ola": [{"symbol": "OLAELEC.NS", "name": "Ola Electric Mobility Limited"}],
+        "ola electric": [{"symbol": "OLAELEC.NS", "name": "Ola Electric Mobility Limited"}],
+        "ola cabs": [{"symbol": "OLAELEC.NS", "name": "Ola Electric Mobility Limited (Ola Cabs EV division)"}],
     }
     
-    if query_clean.lower() in popular_presets:
-        return popular_presets[query_clean.lower()]
+    if query_lower in popular_presets:
+        return popular_presets[query_lower]
+        
+    # Check substring preset matching
+    for key, val in popular_presets.items():
+        if key in query_lower or query_lower in key:
+            return val
 
-    import urllib.request
-    import urllib.parse
-    
     suggestions = []
+    
+    # Method A: Try yfinance Search
     try:
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=8"
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        )
-        with urllib.request.urlopen(req, timeout=3) as response:
-            res_data = json.loads(response.read().decode())
-            quotes = res_data.get("quotes", [])
-            for q in quotes:
+        search = yf.Search(query_clean, max_results=8)
+        if search.quotes:
+            for q in search.quotes:
                 symbol = q.get("symbol")
                 name = q.get("shortname") or q.get("longname") or symbol
-                quote_type = q.get("quoteType", "").upper()
                 if symbol and name:
-                    suggestions.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "type": quote_type
-                    })
+                    suggestions.append({"symbol": symbol, "name": name})
     except Exception:
         pass
         
-    # If API fails or yields nothing, return a fallback with the typed query treated as a ticker
+    # Method B: Fallback to direct Yahoo Search API
+    if not suggestions:
+        import urllib.request
+        import urllib.parse
+        try:
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=8"
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, timeout=3) as response:
+                res_data = json.loads(response.read().decode())
+                quotes = res_data.get("quotes", [])
+                for q in quotes:
+                    symbol = q.get("symbol")
+                    name = q.get("shortname") or q.get("longname") or symbol
+                    if symbol and name:
+                        suggestions.append({"symbol": symbol, "name": name})
+        except Exception:
+            pass
+
+    # Method C: Default Fallback if both search methods yield nothing
     if not suggestions:
         suggestions = [{"symbol": query_clean.upper(), "name": f"Query: {query_clean.upper()}"}]
         
     return suggestions
+
 
 # =====================================
 # GLOBAL FINANCIAL FETCH ENGINE (Any Ticker Worldwide)
