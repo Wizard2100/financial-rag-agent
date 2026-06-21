@@ -213,70 +213,78 @@ TICKERS = {
 }
 
 # =====================================
-# VERIFIED Snapshot & du Pont Financials (FY25)
+# TICKER RESOLVER (Company Name -> Stock Ticker)
 # =====================================
-VERIFIED_FINANCIALS = {
-    "NVIDIA": {
-        "fiscal_year_end": "January 26, 2025",
-        "source": "NVIDIA FY2025 Form 10-K",
-        "Revenue": 130.5,
-        "Operating Income": 81.45,
-        "Net Income": 72.88,
-        "Revenue Growth %": 114.0,
-        "Assets": 115.0,
-        "Equity": 85.0,
-        "roe": 85.18,
-        "net_margin": 55.85,
-        "asset_turnover": 1.13,
-        "leverage": 1.35,
-        "fcf_margin": 45.0,
-        "shares_outstanding": 24.5,
-        "cash": 34.0,
-        "debt": 8.5,
-        "industry": "Semiconductors & AI Hardware",
-        "quote": "Revenue more than doubled to $130.5 billion, up 114% year-over-year. Operating income rose 147% to $81.5 billion. Net income $72,880 million, up 145%."
-    },
-    "Microsoft": {
-        "fiscal_year_end": "June 30, 2025",
-        "source": "Microsoft FY2025 Annual Report",
-        "Revenue": 281.7,
-        "Operating Income": 128.5,
-        "Net Income": 101.8,
-        "Revenue Growth %": 15.0,
-        "Assets": 510.0,
-        "Equity": 290.0,
-        "roe": 35.10,
-        "net_margin": 36.14,
-        "asset_turnover": 0.55,
-        "leverage": 1.76,
-        "fcf_margin": 28.0,
-        "shares_outstanding": 7.43,
-        "cash": 80.0,
-        "debt": 45.0,
-        "industry": "Cloud Computing & Enterprise Software",
-        "quote": "Revenue was $281.7 billion, up 15 percent. Operating income grew 17 percent to $128.5 billion. Azure surpassed $75 billion in revenue for the first time, up 34 percent."
-    },
-    "Reliance": {
-        "fiscal_year_end": "March 31, 2025",
-        "source": "Reliance Industries Integrated Annual Report 2024-25",
-        "Revenue": 125.3,
-        "Operating Income": 14.5, # Adjusted Consolidated EBIT
-        "Net Income": 9.5,
-        "Revenue Growth %": 7.1,
-        "Assets": 222.0,
-        "Equity": 99.0,
-        "roe": 9.56,
-        "net_margin": 7.59,
-        "asset_turnover": 0.56,
-        "leverage": 2.24,
-        "fcf_margin": 6.0,
-        "shares_outstanding": 6.77,
-        "cash": 4.7,
-        "debt": 17.6,
-        "industry": "Conglomerate (Energy, Retail, Telecom)",
-        "quote": "Consolidated revenue increased by 7.1% to Rs 10,71,174 crore (US$125.3 billion). EBITDA grew 2.9% to Rs 1,83,422 crore (US$21.5 billion). PAT rose 2.9% to Rs 81,309 crore (US$9.5 billion)."
+def resolve_ticker(query):
+    if not query:
+        return "AAPL"
+    
+    query_clean = query.strip()
+    
+    # 1. Check if it's already an uppercase ticker symbol
+    if query_clean.isupper() and len(query_clean) <= 12 and re.match(r'^[A-Z0-9.\-]+$', query_clean):
+        return query_clean
+        
+    # 2. Predefined mappings for common user inputs
+    popular_mappings = {
+        "microsoft": "MSFT",
+        "nvidia": "NVDA",
+        "reliance": "RELIANCE.NS",
+        "reliance industries": "RELIANCE.NS",
+        "apple": "AAPL",
+        "google": "GOOGL",
+        "alphabet": "GOOGL",
+        "amazon": "AMZN",
+        "tesla": "TSLA",
+        "meta": "META",
+        "facebook": "META",
+        "netflix": "NFLX",
+        "amd": "AMD",
+        "intel": "INTC",
+        "tata motors": "TATAMOTORS.NS",
+        "tcs": "TCS.NS",
+        "infosys": "INFY",
+        "berkshire": "BRK-B",
+        "berkshire hathaway": "BRK-B"
     }
-}
+    
+    query_lower = query_clean.lower()
+    if query_lower in popular_mappings:
+        return popular_mappings[query_lower]
+        
+    # Check substring match in popular mappings
+    for name, ticker in popular_mappings.items():
+        if name in query_lower:
+            return ticker
+
+    # 3. Dynamic lookup via Yahoo Finance Search API
+    import urllib.request
+    import urllib.parse
+    
+    try:
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=3"
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=4) as response:
+            res_data = json.loads(response.read().decode())
+            quotes = res_data.get("quotes", [])
+            for q in quotes:
+                symbol = q.get("symbol")
+                quote_type = q.get("quoteType", "").upper()
+                if symbol and (quote_type == "EQUITY" or quote_type == "ETF" or quote_type == "INDEX"):
+                    return symbol
+            if quotes and quotes[0].get("symbol"):
+                return quotes[0]["symbol"]
+    except Exception:
+        pass
+        
+    # 4. If all else fails, convert to uppercase and strip whitespace
+    if " " not in query_clean and len(query_clean) <= 6:
+        return query_clean.upper()
+        
+    return query_clean
 
 # =====================================
 # GLOBAL FINANCIAL FETCH ENGINE (Any Ticker Worldwide)
@@ -352,21 +360,32 @@ def fetch_global_financials(ticker_symbol):
 # SIDEBAR CONTROLS
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
-global_ticker = st.sidebar.text_input("Analyze Any Stock Ticker", value="AAPL", help="Type any ticker symbol (e.g. NVDA, TSLA, AAPL, TCS.NS, BP.L)").upper()
+company_input = st.sidebar.text_input(
+    "Analyze Any Company", 
+    value="Microsoft", 
+    help="Type any company name (e.g. Microsoft, Nvidia, Reliance, Apple, Tesla) or ticker symbol."
+)
 
-with st.sidebar.spinner("Fetching global market indicators..."):
+# Resolve query to ticker symbol
+global_ticker = resolve_ticker(company_input)
+
+with st.sidebar.spinner(f"Fetching financials for {global_ticker}..."):
     global_data = fetch_global_financials(global_ticker)
 
 if global_data:
-    st.sidebar.success(f"Loaded: {global_data['name']}")
+    st.sidebar.success(f"Loaded: {global_data['name']} ({global_ticker})")
+    
+    price_val = global_data.get('price')
+    price_str = f"{global_data['currency']} {price_val:,.2f}" if price_val is not None else "Price N/A"
+    
     st.sidebar.markdown(f"""
     <div style='background-color:#121824; border:1px solid #212836; border-radius:6px; padding:10px 15px; margin-bottom:10px;'>
         <span style='color:#8b949e; font-size:12px;'>Current Live Price</span><br/>
-        <span style='font-size:22px; font-weight:700; color:#58a6ff;'>{global_data['currency']} {global_data['price']:,.2f}</span>
+        <span style='font-size:22px; font-weight:700; color:#58a6ff;'>{price_str}</span>
     </div>
     """, unsafe_allow_html=True)
 else:
-    st.sidebar.warning("Could not download financials. Displaying offline estimates.")
+    st.sidebar.warning(f"Could not download financials for '{global_ticker}'. Displaying offline estimates.")
 
 st.sidebar.divider()
 st.sidebar.markdown("<h2 style='color:#e6edf3; font-size:18px;'>🔑 LLM Configuration</h2>", unsafe_allow_html=True)
@@ -377,8 +396,6 @@ if api_key:
     st.sidebar.success("Gemini API Key Loaded!")
 else:
     st.sidebar.info("Demo Mode (Cache-only active). Input key for custom prompts.")
-
-# Old cache definitions removed (moved to top of file)
 
 # =====================================
 # APP LOGIC HEADER
@@ -462,7 +479,7 @@ with tab_val:
     live_price = active_data["price"]
     
     with col_chart:
-        if live_price:
+        if live_price is not None and live_price > 0:
             currency = active_data["currency"]
             mos = (1 - (live_price / implied_share_value)) * 100
             mos_text = f"Margin of Safety: **{mos:.2f}%**" if mos >= 0 else f"Implied Overvaluation: **{abs(mos):.2f}%**"
@@ -517,53 +534,19 @@ with tab_val:
     }, index=years_label)
     st.dataframe(dcf_df.T, use_container_width=True)
 
-    # Sensitivity Heatmap Matrix
-    st.markdown("#### 🌡️ Sensitivity Analysis (Fair Value vs WACC & Terminal Growth)")
-    wacc_test = np.linspace(dcf_wacc - 2.0, dcf_wacc + 2.0, 5)
-    tg_test = np.linspace(dcf_terminal - 1.0, dcf_terminal + 1.0, 5)
-    
-    sens_matrix = []
-    for w in wacc_test:
-        row = []
-        for tg in tg_test:
-            if w <= tg:
-                row.append(np.nan)
-                continue
-            fcf_5 = fcf_projection[-1]
-            tv = (fcf_5 * (1 + (tg / 100))) / ((w - tg) / 100)
-            
-            dfs = [1 / ((1 + (w / 100)) ** yr) for yr in range(1, 6)]
-            pv_fcf = sum(f * d for f, d in zip(fcf_projection, dfs))
-            pv_tv = tv * dfs[-1]
-            ev = pv_fcf + pv_tv
-            eq = ev + active_data["cash"] - active_data["debt"]
-            val_per_share = eq / active_data["shares"]
-            row.append(round(val_per_share, 2))
-        sens_matrix.append(row)
-        
-    sens_df = pd.DataFrame(
-        sens_matrix, 
-        index=[f"WACC {w:.1f}%" for w in wacc_test],
-        columns=[f"TG {t:.1f}%" for t in tg_test]
-    )
-    
-    fig_heat = px.imshow(
-        sens_df,
-        labels=dict(x="Terminal Growth Rate", y="Discount Rate (WACC)", color="Share Value"),
-        x=sens_df.columns,
-        y=sens_df.index,
-        color_continuous_scale="Viridis",
-        title="Share Value Sensitivity Matrix"
-    )
-    fig_heat.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=350)
-    st.plotly_chart(fig_heat, use_container_width=True)
-
 # =====================================
 # TAB 2: DU PONT PROFITABILITY
 # =====================================
 with tab_dup:
     st.markdown(f"### 🕸️ du Pont Profitability Decomposition: {active_data['name']}")
     st.caption("Breaks down Return on Equity (ROE) into operational efficiency, asset utilization, and financial leverage ratios.")
+    
+    # Pre-calculated benchmark data dictionary for display components
+    VERIFIED_FINANCIALS = {
+        "NVIDIA": {"roe": 121.2, "net_margin": 55.8, "asset_turnover": 0.98, "leverage": 2.21},
+        "Microsoft": {"roe": 38.4, "net_margin": 36.1, "asset_turnover": 0.58, "leverage": 1.83},
+        "Reliance": {"roe": 9.2, "net_margin": 7.6, "asset_turnover": 0.39, "leverage": 3.10}
+    }
     
     st.markdown(f"""
     <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:20px; margin-bottom:20px;'>
@@ -620,6 +603,7 @@ with tab_port:
     st.markdown("### 📊 Portfolio Optimizer & Historical Backtester")
     st.caption("Enter a comma-separated list of any global tickers to backtest. Daily data is fetched in real-time.")
     
+    # User-defined tickers input
     port_tickers_input = st.text_input("Enter Ticker Symbols (Comma-separated)", value="NVDA, MSFT, AAPL, GOOG")
     port_tickers = [t.strip().upper() for t in port_tickers_input.split(",") if t.strip()]
     
@@ -662,11 +646,13 @@ with tab_port:
                         returns = df_prices.pct_change().dropna()
                         bench_returns = df_benchmark.pct_change().dropna()
                         
+                        # Sort weights to match alphabetically sorted columns
                         sorted_tickers = sorted(port_tickers)
                         w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
                         
                         portfolio_daily = returns.dot(w_vector)
                         
+                        # Resolve single-column dataframes to 1D series
                         if isinstance(portfolio_daily, pd.DataFrame):
                             portfolio_daily = portfolio_daily.squeeze()
                         if isinstance(bench_returns, pd.DataFrame):
@@ -737,10 +723,12 @@ with tab_self_rag:
     uploaded_file = st.file_uploader("Upload filing PDF", type=["pdf"])
     
     if uploaded_file:
+        # Check if already processed
         if "file_hash" not in st.session_state or st.session_state.file_hash != uploaded_file.name:
             with st.spinner("Extracting PDF text contents..."):
                 pdf_reader = PdfReader(uploaded_file)
                 text = ""
+                # Cap at 80 pages to prevent memory exhaustion in Streamlit Cloud
                 pages_to_read = min(80, len(pdf_reader.pages))
                 for pg_idx in range(pages_to_read):
                     pg_text = pdf_reader.pages[pg_idx].extract_text()
@@ -769,6 +757,7 @@ with tab_self_rag:
                 st.session_state.uploaded_vectors = up_vectors
                 st.success(f"Fully Vectorized! Created {len(up_chunks)} segments inside temporary FAISS Index.")
 
+        # Query UI for uploaded document
         if "uploaded_index" in st.session_state:
             up_query = st.text_input("Ask a question about the uploaded document")
             if up_query:
@@ -799,6 +788,7 @@ with tab_self_rag:
                 else:
                     st.info("Input a Gemini API Key in the sidebar to get AI-generated answers. Direct matching source chunks are shown below.")
                 
+                # Show source chunks
                 st.markdown("#### 🔍 Matching Segments:")
                 for idx, (txt, dist) in enumerate(zip(ret_chunks, D[0])):
                     with st.expander(f"Chunk {idx+1} (L2 Distance: {dist:.4f})"):
@@ -807,6 +797,7 @@ with tab_self_rag:
 # =====================================
 # TAB 5: BASELINE FILED SNAPSHOTS
 # =====================================
+# Direct Analysis logic RAG
 def retrieve_baseline_chunks(query_vector, target_companies_list=None):
     if not chunks:
         return [], []
