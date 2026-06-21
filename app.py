@@ -1038,7 +1038,7 @@ with tab_dup:
         
     with col_f:
         f_color = "#3fb950" if solvency['f_score'] >= 7 else ("#dfb312" if solvency['f_score'] >= 4 else "#f85149")
-        f_desc = "Strong Financial Health" if solvency['f_score'] >= 7 else ("stable Health" if solvency['f_score'] >= 4 else "Weak / High Risk")
+        f_desc = "Strong Financial Health" if solvency['f_score'] >= 7 else ("Stable Health" if solvency['f_score'] >= 4 else "Weak / High Risk")
         st.markdown(f"""
         <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:15px; text-align:center;'>
             <span style='color:#8b949e; font-size:12px; text-transform:uppercase;'>Piotroski F-Score</span><br/>
@@ -1491,28 +1491,83 @@ with tab_self_rag:
                         client = genai.Client(api_key=api_key)
                         prompt = f"""
                         You are a senior equity research analyst and investment strategist. 
-                        Answer the user's question by combining facts from the provided document segments with your own extensive knowledge of financial markets, strategic frameworks, and economic trends. 
+                        Answer the user's question by combining facts from the provided document segments with your own extensive knowledge of financial markets, strategic frameworks, and economic trends.
                         
                         1. Factual Baseline: Use the document context below to anchor your factual statements (e.g. historical numbers, management guidance).
-                        2. Strategic Extrapolation: Think deeply and critically about the company's future. Extrapolate strategic options, future growth opportunities, technological shifts, macro headwinds, and potential competitive dynamics.
-                        3. Risk Assessment: Evaluate forward-looking risks and provide clear, actionable investment takeaways.
+                        2. Strategic Extrapolation: Think deeply and critically about the company's future over the timeline mentioned in the question (e.g. 5 years, 10 years). Extrapolate strategic options, future growth opportunities, technological shifts, macro headwinds, and potential competitive dynamics.
+                        3. Peer Comparison Data: Synthesize numerical comparison estimations for the main company and 2-3 key industry competitors/peers (e.g. BYD, Rivian, and Tesla; or Google, Amazon, and Microsoft) matching the timeline and metrics discussed in your answer.
                         
                         CONTEXT FROM FILING:
                         {ret_context}
                         
                         QUESTION:
                         {up_query}
+                        
+                        You MUST respond in clean, valid JSON format matching exactly this structure:
+                        {{
+                          "detailed_analysis": "A detailed, structured markdown text with sections like # Title, ## Factual Baseline, ## Future Outlook, ## Strategic Extrapolation, etc.",
+                          "comparison_data": [
+                            {{"Metric": "Metric Name (e.g., Revenue ($B) or FCF Margin (%))", "Company": "Company Name", "Value": 150.0, "Timeline": "5-Year Outlook"}}
+                          ]
+                        }}
                         """
                         try:
                             try:
-                                resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                                resp = client.models.generate_content(
+                                    model="gemini-2.5-flash", 
+                                    contents=prompt,
+                                    config=types.GenerateContentConfig(
+                                        response_mime_type="application/json",
+                                        temperature=0.2
+                                    )
+                                )
                             except errors.ClientError as ec:
                                 if ec.code == 429:
-                                    resp = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+                                    resp = client.models.generate_content(
+                                        model="gemini-2.5-flash-lite", 
+                                        contents=prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json",
+                                            temperature=0.2
+                                        )
+                                    )
                                 else:
                                     raise ec
+                                    
+                            # Parse JSON response
+                            raw_clean = re.sub(r"^```(json)?|```$", "", resp.text.strip()).strip()
+                            data = json.loads(raw_clean)
+                            
                             st.markdown("#### 💡 AI Answer:")
-                            st.write(resp.text)
+                            st.markdown(data.get("detailed_analysis", ""))
+                            
+                            # Render comparison visuals if data is present
+                            comp_list = data.get("comparison_data") or []
+                            if comp_list:
+                                df_comp = pd.DataFrame(comp_list)
+                                df_comp["Value"] = pd.to_numeric(df_comp["Value"], errors="coerce")
+                                df_comp = df_comp.dropna(subset=["Value", "Metric", "Company"])
+                                
+                                if not df_comp.empty:
+                                    st.markdown("#### 📊 Forward Peer Benchmarking Chart")
+                                    fig_comp = px.bar(
+                                        df_comp, 
+                                        x="Company", 
+                                        y="Value", 
+                                        color="Company", 
+                                        facet_col="Metric", 
+                                        text_auto=".2f",
+                                        title=f"Peer Comparison Benchmark ({df_comp['Timeline'].iloc[0]})"
+                                    )
+                                    fig_comp.update_yaxes(matches=None)
+                                    fig_comp.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+                                    fig_comp.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+                                    st.plotly_chart(fig_comp, use_container_width=True)
+                                    
+                                    # Also show the comparison table
+                                    st.markdown("##### 📋 Peer Comparison Dataset")
+                                    pivot_df = df_comp.pivot_table(index="Metric", columns="Company", values="Value", aggfunc="first")
+                                    st.dataframe(pivot_df.style.format("{:,.2f}", na_rep="—"), use_container_width=True)
                         except Exception as e:
                             handle_gemini_error(e, "evaluating document context")
                 else:
@@ -1855,7 +1910,7 @@ with tab_rag:
                     handle_gemini_error(e, "retrieving & parsing annual filings")
                     
         if data:
-            st.markdown(f"#### 🔍 Executive Summary")
+            st.markdown(f"#### 💡 Executive Summary")
             st.info(data.get("summary", ""))
             
             findings = data.get("key_findings") or []
