@@ -793,9 +793,14 @@ with tab_self_rag:
                     with st.spinner("AI Analyst is evaluating context..."):
                         client = genai.Client(api_key=api_key)
                         prompt = f"""
-                        You are a senior equity analyst. Answer the user's question using ONLY the provided document segments.
+                        You are a senior equity research analyst and investment strategist. 
+                        Answer the user's question by combining facts from the provided document segments with your own extensive knowledge of financial markets, strategic frameworks, and economic trends. 
                         
-                        CONTEXT:
+                        1. Factual Baseline: Use the document context below to anchor your factual statements (e.g. historical numbers, management guidance).
+                        2. Strategic Extrapolation: Think deeply and critically about the company's future. Extrapolate strategic options, future growth opportunities, technological shifts, macro headwinds, and potential competitive dynamics.
+                        3. Risk Assessment: Evaluate forward-looking risks and provide clear, actionable investment takeaways.
+                        
+                        CONTEXT FROM FILING:
                         {ret_context}
                         
                         QUESTION:
@@ -815,6 +820,171 @@ with tab_self_rag:
                 for idx, (txt, dist) in enumerate(zip(ret_chunks, D[0])):
                     with st.expander(f"Chunk {idx+1} (L2 Distance: {dist:.4f})"):
                         st.text(txt)
+
+# Helper to extract tickers via LLM
+def extract_tickers_via_llm(query, api_key):
+    client = genai.Client(api_key=api_key)
+    prompt = f"""
+    Identify all stock tickers or public company names mentioned in this user query.
+    Return ONLY a JSON list of stock ticker symbols. If none are mentioned, return [].
+    
+    QUERY: {query}
+    """
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        tickers = json.loads(response.text.strip())
+        return [t.upper() for t in tickers]
+    except Exception:
+        return []
+
+# Helper to fetch dynamic global company profile and stats context
+def get_dynamic_company_context(ticker_symbol):
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+        name = info.get("longName") or info.get("shortName") or ticker_symbol
+        summary = info.get("longBusinessSummary", "No company summary available.")
+        sector = info.get("sector", "N/A")
+        industry = info.get("industry", "N/A")
+        
+        # Financial stats
+        fin_data = fetch_global_financials(ticker_symbol)
+        fin_text = ""
+        if fin_data:
+            fin_text = f"""
+            KEY STATS & FINANCIALS (in Billions where applicable):
+            - Current Stock Price: {fin_data['currency']} {fin_data.get('price', 'N/A')}
+            - Revenue: {fin_data['currency']} {fin_data['revenue']:.2f}B
+            - EBIT (Operating Income): {fin_data['currency']} {fin_data['ebit']:.2f}B
+            - Net Income: {fin_data['currency']} {fin_data['net_income']:.2f}B
+            - Total Assets: {fin_data['currency']} {fin_data['assets']:.2f}B
+            - Total Equity: {fin_data['currency']} {fin_data['equity']:.2f}B
+            - Cash on Hand: {fin_data['currency']} {fin_data['cash']:.2f}B
+            - Total Debt: {fin_data['currency']} {fin_data['debt']:.2f}B
+            - Return on Equity (ROE): {fin_data['roe']:.2f}%
+            - Net Profit Margin: {fin_data['net_margin']:.2f}%
+            - Asset Turnover Ratio: {fin_data['asset_turnover']:.2f}x
+            - Leverage Ratio: {fin_data['leverage']:.2f}x
+            """
+            
+        # Recent news headlines
+        news_text = ""
+        try:
+            news = ticker.news
+            if news:
+                news_text = "\nRECENT NEWS AND MEDIA FEED:\n"
+                for item in news[:5]:
+                    title = item.get("title", "")
+                    publisher = item.get("publisher", "")
+                    news_text += f"- {title} (Source: {publisher})\n"
+        except Exception:
+            pass
+            
+        context = f"""
+        [DYNAMIC REPORT FOR {name} ({ticker_symbol})]
+        Sector: {sector} | Industry: {industry}
+        
+        BUSINESS BACKGROUND:
+        {summary}
+        
+        {fin_text}
+        {news_text}
+        """
+        return context
+    except Exception as e:
+        return f"Could not retrieve dynamic financials context for ticker {ticker_symbol}: {str(e)}"
+
+# Master router for Tab 5 context retrieval
+def get_company_context_for_rag(query, query_vector, api_key=None):
+    baseline_map = {
+        "NVIDIA": "NVDA",
+        "Microsoft": "MSFT",
+        "Reliance": "RELIANCE.NS"
+    }
+    
+    detected_tickers = []
+    q_lower = query.lower()
+    
+    # Check for direct mentions of baselines
+    for name, ticker in baseline_map.items():
+        if name.lower() in q_lower or ticker.lower() in q_lower:
+            detected_tickers.append(ticker)
+            
+    # Check for common presets
+    global_map = {
+        "apple": "AAPL",
+        "tesla": "TSLA",
+        "google": "GOOGL",
+        "alphabet": "GOOGL",
+        "amazon": "AMZN",
+        "meta": "META",
+        "facebook": "META",
+        "netflix": "NFLX",
+        "amd": "AMD",
+        "intel": "INTC",
+        "tata motors": "TATAMOTORS.NS",
+        "tcs": "TCS.NS",
+        "infosys": "INFY",
+        "ola": "OLAELEC.NS",
+        "ola electric": "OLAELEC.NS"
+    }
+    
+    for name, ticker in global_map.items():
+        if name in q_lower:
+            if ticker not in detected_tickers:
+                detected_tickers.append(ticker)
+                
+    # If we have an API key, use the LLM to dynamically extract tickers
+    if api_key:
+        llm_tickers = extract_tickers_via_llm(query, api_key)
+        for t in llm_tickers:
+            if t not in detected_tickers:
+                detected_tickers.append(t)
+                
+    # If no ticker detected, use the current active sidebar company!
+    if not detected_tickers:
+        detected_tickers.append(global_ticker)
+        
+    context_parts = []
+    retrieved_faiss_chunks = []
+    distances = []
+    
+    for ticker in list(set(detected_tickers)):
+        is_baseline = False
+        comp_name_baseline = ""
+        for name, sym in baseline_map.items():
+            if sym == ticker or name.lower() in ticker.lower():
+                is_baseline = True
+                comp_name_baseline = name
+                break
+                
+        if is_baseline and chunks:
+            # Pull from FAISS database
+            comp_chunks, comp_dists = retrieve_baseline_chunks(query_vector, [comp_name_baseline])
+            retrieved_faiss_chunks.extend(comp_chunks)
+            distances.extend(comp_dists)
+            
+            for idx, c in enumerate(comp_chunks):
+                txt = c.get("text", "") if isinstance(c, dict) else str(c)
+                context_parts.append(f"[Source: {comp_name_baseline} Annual Report Segment {idx+1}]\n{txt}")
+        else:
+            # Fetch dynamic company context
+            dyn_context = get_dynamic_company_context(ticker)
+            context_parts.append(dyn_context)
+            # Create a mock retrieved chunk for UI compatibility
+            retrieved_faiss_chunks.append({
+                "company": ticker,
+                "text": f"Dynamic business profile and financials loaded for {ticker}."
+            })
+            distances.append(0.0)
+                
+    return "\n\n".join(context_parts), retrieved_faiss_chunks, distances
 
 # =====================================
 # TAB 5: BASELINE FILED SNAPSHOTS
@@ -867,7 +1037,7 @@ Respond in clean, valid JSON format, matching exactly this structure:
 Rules:
 1. comparison_table: only include actual numerical figures backed by the context.
 2. segment_breakdown: only populate if the question asks for segment/divisional splits. Otherwise, leave empty.
-3. currencies: keep units exactly as reported (USD for NVDA/MSFT, INR Crore for Reliance).
+3. currencies: keep units exactly as reported (USD for NVDA/MSFT, INR Crore for Reliance, or as specified in the dynamic stats context).
 """
     client = genai.Client(api_key=api_key)
     try:
@@ -931,15 +1101,7 @@ with tab_rag:
         is_cached = False
         
         query_vector = embedding_model.encode([rag_query]).astype("float32")
-        targets_detected = parse_target_companies(rag_query)
-        retrieved_chunks, distances = retrieve_baseline_chunks(query_vector, targets_detected)
-        
-        context_parts = []
-        for idx, chunk in enumerate(retrieved_chunks, start=1):
-            comp = chunk.get("company", "Unknown") if isinstance(chunk, dict) else "Unknown"
-            txt = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
-            context_parts.append(f"[Source {idx} | {comp}]\n{txt}")
-        context = "\n\n".join(context_parts)
+        context, retrieved_chunks, distances = get_company_context_for_rag(rag_query, query_vector, api_key)
         
         if os.path.exists(cache_path):
             with open(cache_path) as f:
