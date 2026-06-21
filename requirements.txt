@@ -1,10 +1,13 @@
-streamlit
-google-genai
-sentence-transformers
-faiss-cpu
-numpy
+streamlit>=1.50
 pandas
-pypdf
-python-docx
+numpy
 plotly
+faiss-cpu
+sentence-transformers
 yfinance
+google-genai
+openpyxl
+reportlab
+
+# dev/testing only - not needed for the deployed app itself
+pytest

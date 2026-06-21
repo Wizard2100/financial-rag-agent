@@ -1,0 +1,19 @@
+[
+  {"question": "Which company's filing discusses export licensing requirements for selling advanced AI chips to certain countries?", "expected_company": "NVIDIA"},
+  {"question": "Which company's report names specific GPU products like the A100 in its discussion of export controls?", "expected_company": "NVIDIA"},
+  {"question": "Which company discusses its CUDA software platform and developer ecosystem?", "expected_company": "NVIDIA"},
+  {"question": "Which company breaks out 'data center' as a reporting segment with its own revenue figure?", "expected_company": "NVIDIA"},
+  {"question": "Which company describes itself as a leader in accelerated computing?", "expected_company": "NVIDIA"},
+
+  {"question": "Which company's annual report discusses Azure revenue growth?", "expected_company": "Microsoft"},
+  {"question": "Which company reports a combined 'Microsoft Cloud' revenue figure across its cloud products?", "expected_company": "Microsoft"},
+  {"question": "Which company's segment reporting includes Office 365 subscription revenue?", "expected_company": "Microsoft"},
+  {"question": "Which company's filing discusses its acquisition of Activision Blizzard?", "expected_company": "Microsoft"},
+  {"question": "Which company's filing discusses goodwill impairment testing tied to a gaming acquisition?", "expected_company": "Microsoft"},
+
+  {"question": "Which company's annual report discusses its Jio telecom subscriber base?", "expected_company": "Reliance"},
+  {"question": "Which company's report discusses its refining complex at Jamnagar?", "expected_company": "Reliance"},
+  {"question": "Which company reports an Oil-to-Chemicals (O2C) business segment?", "expected_company": "Reliance"},
+  {"question": "Which company's report covers its retail business under the Reliance Retail brand?", "expected_company": "Reliance"},
+  {"question": "Which company reports its results in Crore as a unit, alongside USD conversions?", "expected_company": "Reliance"}
+]
