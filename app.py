@@ -430,7 +430,7 @@ tab_val, tab_dup, tab_port, tab_self_rag, tab_rag = st.tabs([
     "🕸️ du Pont Profitability", 
     "📊 Dynamic Portfolio Backtest",
     "📁 Self-Serve PDF RAG",
-    "🔒 Baseline Filed Reports"
+    "🔒 Global Reports RAG"
 ])
 
 # Get baseline active company data
@@ -501,7 +501,7 @@ with tab_val:
     live_price = active_data["price"]
     
     with col_chart:
-        if live_price is not None and live_price > 0:
+        if live_price:
             currency = active_data["currency"]
             mos = (1 - (live_price / implied_share_value)) * 100
             mos_text = f"Margin of Safety: **{mos:.2f}%**" if mos >= 0 else f"Implied Overvaluation: **{abs(mos):.2f}%**"
@@ -563,13 +563,6 @@ with tab_dup:
     st.markdown(f"### 🕸️ du Pont Profitability Decomposition: {active_data['name']}")
     st.caption("Breaks down Return on Equity (ROE) into operational efficiency, asset utilization, and financial leverage ratios.")
     
-    # Pre-calculated benchmark data dictionary for display components
-    VERIFIED_FINANCIALS = {
-        "NVIDIA": {"roe": 121.2, "net_margin": 55.8, "asset_turnover": 0.98, "leverage": 2.21},
-        "Microsoft": {"roe": 38.4, "net_margin": 36.1, "asset_turnover": 0.58, "leverage": 1.83},
-        "Reliance": {"roe": 9.2, "net_margin": 7.6, "asset_turnover": 0.39, "leverage": 3.10}
-    }
-    
     st.markdown(f"""
     <div style='background-color:#121824; border:1px solid #212836; border-radius:8px; padding:20px; margin-bottom:20px;'>
         <div style='text-align:center; margin-bottom:20px;'>
@@ -597,26 +590,61 @@ with tab_dup:
     """, unsafe_allow_html=True)
     
     # Benchmarking DuPont components side-by-side
-    st.markdown("#### 📊 du Pont Component Benchmarking (Baseline Portfolio)")
+    st.markdown("#### 📊 du Pont Component Benchmarking")
+    dup_tickers_input = st.text_input(
+        "Enter Ticker Symbols for Comparison (Comma-separated)", 
+        value="NVDA, MSFT, RELIANCE.NS, AAPL, TSLA",
+        key="dup_tickers_input"
+    )
+    dup_tickers = [t.strip().upper() for t in dup_tickers_input.split(",") if t.strip()]
     
     dup_bench = []
-    for c, val in VERIFIED_FINANCIALS.items():
-        dup_bench.append({"Company": c, "Net Profit Margin (%)": val["net_margin"], "Asset Turnover (x)": val["asset_turnover"], "Financial Leverage (x)": val["leverage"], "ROE (%)": val["roe"]})
-    df_dup = pd.DataFrame(dup_bench)
-    
-    col_m, col_t, col_l = st.columns(3)
-    
-    fig_dup_margin = px.bar(df_dup, x="Company", y="Net Profit Margin (%)", color="Company", title="Net profit margins (%)", text_auto=".2f")
-    fig_dup_margin.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
-    col_m.plotly_chart(fig_dup_margin, use_container_width=True)
-    
-    fig_dup_turn = px.bar(df_dup, x="Company", y="Asset Turnover (x)", color="Company", title="Asset Turnover Ratios (x)", text_auto=".2f")
-    fig_dup_turn.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
-    col_t.plotly_chart(fig_dup_turn, use_container_width=True)
-    
-    fig_dup_lev = px.bar(df_dup, x="Company", y="Financial Leverage (x)", color="Company", title="Financial Leverage Multipliers (x)", text_auto=".2f")
-    fig_dup_lev.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
-    col_l.plotly_chart(fig_dup_lev, use_container_width=True)
+    with st.spinner("Fetching DuPont components..."):
+        for ticker in dup_tickers:
+            baseline_info = None
+            if ticker == "NVDA":
+                baseline_info = {"name": "NVIDIA", "net_margin": 55.8, "asset_turnover": 0.98, "leverage": 2.21, "roe": 121.0}
+            elif ticker == "MSFT":
+                baseline_info = {"name": "Microsoft", "net_margin": 36.1, "asset_turnover": 0.58, "leverage": 1.83, "roe": 38.3}
+            elif ticker in ["RELIANCE.NS", "RELIANCE"]:
+                baseline_info = {"name": "Reliance", "net_margin": 7.6, "asset_turnover": 0.39, "leverage": 3.10, "roe": 9.2}
+                
+            if baseline_info:
+                dup_bench.append({
+                    "Company": baseline_info["name"],
+                    "Net Profit Margin (%)": baseline_info["net_margin"],
+                    "Asset Turnover (x)": baseline_info["asset_turnover"],
+                    "Financial Leverage (x)": baseline_info["leverage"],
+                    "ROE (%)": baseline_info["roe"]
+                })
+            else:
+                data = fetch_global_financials(ticker)
+                if data:
+                    dup_bench.append({
+                        "Company": data["name"],
+                        "Net Profit Margin (%)": data["net_margin"],
+                        "Asset Turnover (x)": data["asset_turnover"],
+                        "Financial Leverage (x)": data["leverage"],
+                        "ROE (%)": data["roe"]
+                    })
+
+    if dup_bench:
+        df_dup = pd.DataFrame(dup_bench)
+        col_m, col_t, col_l = st.columns(3)
+        
+        fig_dup_margin = px.bar(df_dup, x="Company", y="Net Profit Margin (%)", color="Company", title="Net profit margins (%)", text_auto=".2f")
+        fig_dup_margin.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+        col_m.plotly_chart(fig_dup_margin, use_container_width=True)
+        
+        fig_dup_turn = px.bar(df_dup, x="Company", y="Asset Turnover (x)", color="Company", title="Asset Turnover Ratios (x)", text_auto=".2f")
+        fig_dup_turn.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+        col_t.plotly_chart(fig_dup_turn, use_container_width=True)
+        
+        fig_dup_lev = px.bar(df_dup, x="Company", y="Financial Leverage (x)", color="Company", title="Financial Leverage Multipliers (x)", text_auto=".2f")
+        fig_dup_lev.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+        col_l.plotly_chart(fig_dup_lev, use_container_width=True)
+    else:
+        st.error("No valid company data loaded. Please check the ticker symbols.")
 
 # =====================================
 # TAB 3: DYNAMIC PORTFOLIO BACKTEST
@@ -655,85 +683,85 @@ with tab_port:
                 start_d = end_d - timedelta(days=duration_yrs * 365)
                 
                 try:
-                    df_prices = yf.download(port_tickers, start=start_d, end=end_d)["Close"]
-                    df_benchmark = yf.download("^GSPC", start=start_d, end=end_d)["Close"]
-                    
-                    if df_prices.empty or df_benchmark.empty:
-                        st.error("Failed to download pricing data. Please check ticker symbols.")
-                    else:
-                        df_prices = df_prices.ffill().bfill()
-                        df_benchmark = df_benchmark.ffill().bfill()
-                        df_prices, df_benchmark = df_prices.align(df_benchmark, join='inner', axis=0)
-                        
-                        returns = df_prices.pct_change().dropna()
-                        bench_returns = df_benchmark.pct_change().dropna()
-                        
-                        # Sort weights to match alphabetically sorted columns
-                        sorted_tickers = sorted(port_tickers)
-                        w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
-                        
-                        portfolio_daily = returns.dot(w_vector)
-                        
-                        # Resolve single-column dataframes to 1D series
-                        if isinstance(portfolio_daily, pd.DataFrame):
-                            portfolio_daily = portfolio_daily.squeeze()
-                        if isinstance(bench_returns, pd.DataFrame):
-                            bench_daily = bench_returns.squeeze()
-                        else:
-                            bench_daily = bench_returns
-                            
-                        if isinstance(portfolio_daily, pd.DataFrame):
-                            portfolio_daily = portfolio_daily.iloc[:, 0]
-                        if isinstance(bench_daily, pd.DataFrame):
-                            bench_daily = bench_daily.iloc[:, 0]
-                            
-                        cum_portfolio = (1 + portfolio_daily).cumprod() - 1
-                        cum_benchmark = (1 + bench_daily).cumprod() - 1
-                        
-                        ann_return_p = float(portfolio_daily.mean() * 252 * 100)
-                        ann_vol_p = float(portfolio_daily.std() * np.sqrt(252) * 100)
-                        sharpe_p = float((ann_return_p - 4.0) / ann_vol_p) if ann_vol_p > 0 else 0.0
-                        
-                        cum_returns_plus_one = (1 + portfolio_daily).cumprod()
-                        running_max = cum_returns_plus_one.cummax()
-                        drawdowns = (cum_returns_plus_one - running_max) / running_max
-                        max_drawdown = float(drawdowns.min() * 100)
-                        
-                        ann_return_b = float(bench_daily.mean() * 252 * 100)
-                        ann_vol_b = float(bench_daily.std() * np.sqrt(252) * 100)
-                        sharpe_b = float((ann_return_b - 4.0) / ann_vol_b) if ann_vol_b > 0 else 0.0
-                        
-                        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                        col_m1.metric("Annualized Return", f"{ann_return_p:.1f}%", f"{ann_return_p - ann_return_b:+.1f}% vs Index")
-                        col_m2.metric("Annualized Volatility", f"{ann_vol_p:.1f}%", f"{ann_vol_p - ann_vol_b:+.1f}% vs Index", delta_color="inverse")
-                        col_m3.metric("Sharpe Ratio (Rf=4%)", f"{sharpe_p:.2f}", f"{sharpe_p - sharpe_b:+.2f} vs Index")
-                        col_m4.metric("Max Drawdown", f"{max_drawdown:.1f}%", help="Peak to valley drawdown")
-                        
-                        fig_df = pd.DataFrame({
-                            "Portfolio": cum_portfolio * 100,
-                            "S&P 500 Index": cum_benchmark * 100
-                        }, index=returns.index)
-                        
-                        fig_perf = px.line(fig_df, y=["Portfolio", "S&P 500 Index"], title="Cumulative Performance Comparison")
-                        fig_perf.update_layout(
-                            yaxis_title="Cumulative Return (%)",
-                            xaxis_title="Date",
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            font={'color': "#e6edf3"}
-                        )
-                        st.plotly_chart(fig_perf, use_container_width=True)
+                     df_prices = yf.download(port_tickers, start=start_d, end=end_d)["Close"]
+                     df_benchmark = yf.download("^GSPC", start=start_d, end=end_d)["Close"]
+                     
+                     if df_prices.empty or df_benchmark.empty:
+                         st.error("Failed to download pricing data. Please check ticker symbols.")
+                     else:
+                         df_prices = df_prices.ffill().bfill()
+                         df_benchmark = df_benchmark.ffill().bfill()
+                         df_prices, df_benchmark = df_prices.align(df_benchmark, join='inner', axis=0)
+                         
+                         returns = df_prices.pct_change().dropna()
+                         bench_returns = df_benchmark.pct_change().dropna()
+                         
+                         # Sort weights to match alphabetically sorted columns
+                         sorted_tickers = sorted(port_tickers)
+                         w_vector = np.array([normalized_weights[t] for t in sorted_tickers])
+                         
+                         portfolio_daily = returns.dot(w_vector)
+                         
+                         # Resolve single-column dataframes to 1D series
+                         if isinstance(portfolio_daily, pd.DataFrame):
+                             portfolio_daily = portfolio_daily.squeeze()
+                         if isinstance(bench_returns, pd.DataFrame):
+                             bench_daily = bench_returns.squeeze()
+                         else:
+                             bench_daily = bench_returns
+                             
+                         if isinstance(portfolio_daily, pd.DataFrame):
+                             portfolio_daily = portfolio_daily.iloc[:, 0]
+                         if isinstance(bench_daily, pd.DataFrame):
+                             bench_daily = bench_daily.iloc[:, 0]
+                             
+                         cum_portfolio = (1 + portfolio_daily).cumprod() - 1
+                         cum_benchmark = (1 + bench_daily).cumprod() - 1
+                         
+                         ann_return_p = float(portfolio_daily.mean() * 252 * 100)
+                         ann_vol_p = float(portfolio_daily.std() * np.sqrt(252) * 100)
+                         sharpe_p = float((ann_return_p - 4.0) / ann_vol_p) if ann_vol_p > 0 else 0.0
+                         
+                         cum_returns_plus_one = (1 + portfolio_daily).cumprod()
+                         running_max = cum_returns_plus_one.cummax()
+                         drawdowns = (cum_returns_plus_one - running_max) / running_max
+                         max_drawdown = float(drawdowns.min() * 100)
+                         
+                         ann_return_b = float(bench_daily.mean() * 252 * 100)
+                         ann_vol_b = float(bench_daily.std() * np.sqrt(252) * 100)
+                         sharpe_b = float((ann_return_b - 4.0) / ann_vol_b) if ann_vol_b > 0 else 0.0
+                         
+                         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                         col_m1.metric("Annualized Return", f"{ann_return_p:.1f}%", f"{ann_return_p - ann_return_b:+.1f}% vs Index")
+                         col_m2.metric("Annualized Volatility", f"{ann_vol_p:.1f}%", f"{ann_vol_p - ann_vol_b:+.1f}% vs Index", delta_color="inverse")
+                         col_m3.metric("Sharpe Ratio (Rf=4%)", f"{sharpe_p:.2f}", f"{sharpe_p - sharpe_b:+.2f} vs Index")
+                         col_m4.metric("Max Drawdown", f"{max_drawdown:.1f}%", help="Peak to valley drawdown")
+                         
+                         fig_df = pd.DataFrame({
+                             "Portfolio": cum_portfolio * 100,
+                             "S&P 500 Index": cum_benchmark * 100
+                         }, index=returns.index)
+                         
+                         fig_perf = px.line(fig_df, y=["Portfolio", "S&P 500 Index"], title="Cumulative Performance Comparison")
+                         fig_perf.update_layout(
+                             yaxis_title="Cumulative Return (%)",
+                             xaxis_title="Date",
+                             paper_bgcolor='rgba(0,0,0,0)',
+                             plot_bgcolor='rgba(0,0,0,0)',
+                             font={'color': "#e6edf3"}
+                         )
+                         st.plotly_chart(fig_perf, use_container_width=True)
                 except Exception as e:
-                    st.error(f"Backtesting error: {str(e)}")
+                     st.error(f"Backtesting error: {str(e)}")
         else:
-            st.info("Click 'Run Backtest Engine' on the left panel to execute simulation.")
-            pie_df = pd.DataFrame({
-                "Asset": list(normalized_weights.keys()),
-                "Weight": list(normalized_weights.values())
-            })
-            fig_pie = px.pie(pie_df, names="Asset", values="Weight", hole=0.35, title="Asset Allocation Mix")
-            fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
-            st.plotly_chart(fig_pie, use_container_width=True)
+             st.info("Click 'Run Backtest Engine' on the left panel to execute simulation.")
+             pie_df = pd.DataFrame({
+                 "Asset": list(normalized_weights.keys()),
+                 "Weight": list(normalized_weights.values())
+             })
+             fig_pie = px.pie(pie_df, names="Asset", values="Weight", hole=0.35, title="Asset Allocation Mix")
+             fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+             st.plotly_chart(fig_pie, use_container_width=True)
 
 # =====================================
 # TAB 4: SELF-SERVE PDF RAG
@@ -873,6 +901,32 @@ def get_dynamic_company_context(ticker_symbol):
             - Leverage Ratio: {fin_data['leverage']:.2f}x
             """
             
+        # Forward Analyst Estimates & Projections
+        forward_text = "\nFORWARD-LOOKING ESTIMATES & ANALYST EXPECTATIONS:\n"
+        forward_text += f"- Forward P/E Ratio: {info.get('forwardPE', 'N/A')}\n"
+        forward_text += f"- PEG Ratio (5 yr expected): {info.get('pegRatio', 'N/A')}\n"
+        
+        rev_growth = info.get('revenueGrowth')
+        rev_growth_pct = f"{rev_growth * 100:.2f}%" if rev_growth is not None else "N/A"
+        forward_text += f"- Quarterly Revenue Growth (YoY): {rev_growth_pct}\n"
+        
+        earn_growth = info.get('earningsGrowth')
+        earn_growth_pct = f"{earn_growth * 100:.2f}%" if earn_growth is not None else "N/A"
+        forward_text += f"- Quarterly Earnings Growth (YoY): {earn_growth_pct}\n"
+        
+        forward_text += f"- Analyst Mean Price Target: {info.get('currency', '$')} {info.get('targetMeanPrice', 'N/A')}\n"
+        forward_text += f"- Analyst High Price Target: {info.get('currency', '$')} {info.get('targetHighPrice', 'N/A')}\n"
+        forward_text += f"- Analyst Low Price Target: {info.get('currency', '$')} {info.get('targetLowPrice', 'N/A')}\n"
+        forward_text += f"- Consensus Recommendation: {info.get('recommendationKey', 'N/A')} (Mean Score: {info.get('recommendationMean', 'N/A')})\n"
+        forward_text += f"- Number of Analyst Opinions: {info.get('numberOfAnalystOpinions', 'N/A')}\n"
+
+        try:
+            cal = ticker.calendar
+            if cal and isinstance(cal, dict):
+                forward_text += f"- Next Earnings Date Range: {cal.get('Earnings Date', 'N/A')}\n"
+        except Exception:
+            pass
+            
         # Recent news headlines
         news_text = ""
         try:
@@ -894,6 +948,7 @@ def get_dynamic_company_context(ticker_symbol):
         {summary}
         
         {fin_text}
+        {forward_text}
         {news_text}
         """
         return context
@@ -1013,7 +1068,10 @@ def retrieve_baseline_chunks(query_vector, target_companies_list=None):
 
 def generate_rag_content(query, context):
     system_prompt = f"""
-You are a senior equity research analyst answering a client's query based on company annual report text.
+You are a senior equity research analyst and investment strategist answering a client's query.
+Use the context excerpts below, which contain historical report data, recent news, and forward-looking analyst estimates (like quarterly growth rates, price targets, forward P/E, etc.), to answer the query.
+
+If the user asks about future periods (such as FY25, FY26, or forward estimations) and direct numbers are not explicitly written, you should use the provided growth rates or forward metrics to think deeply, extrapolate, and calculate the numbers. State your calculations and assumptions clearly.
 
 CONTEXT EXCERPTS:
 {context}
@@ -1035,9 +1093,9 @@ Respond in clean, valid JSON format, matching exactly this structure:
 }}
 
 Rules:
-1. comparison_table: only include actual numerical figures backed by the context.
+1. comparison_table: only include actual numerical figures backed by the context or your logical projections.
 2. segment_breakdown: only populate if the question asks for segment/divisional splits. Otherwise, leave empty.
-3. currencies: keep units exactly as reported (USD for NVDA/MSFT, INR Crore for Reliance, or as specified in the dynamic stats context).
+3. currencies: keep units exactly as reported (USD for US stocks, INR Crore for Indian stocks, EUR for European, etc.).
 """
     client = genai.Client(api_key=api_key)
     try:
@@ -1075,14 +1133,14 @@ def parse_target_companies(query):
     return targets if targets else None
 
 with tab_rag:
-    st.markdown("### 🔒 Baseline Filed Reports (FY25 Snapshot RAG)")
-    st.caption("Ask questions about the original baseline datasets: NVIDIA, Microsoft, and Reliance Industries reports.")
+    st.markdown("### 🔒 Global Reports RAG (Historical + Estimates)")
+    st.caption("Ask questions about any global public company (e.g., Ferrari, Apple, NVIDIA, Ola, etc.). The agent will synthesize baseline filings or live profile/estimates data.")
     
     st.markdown("**Try a standard comparison:**")
     eq_cols = st.columns(3)
     examples = [
-        "Compare revenue and net income across NVIDIA, Microsoft and Reliance",
-        "Compare the AI strategies of Microsoft and NVIDIA",
+        "Compare the forward growth rates and estimates of NVIDIA and Microsoft",
+        "Analyze the forward revenue and margin outlook of Ferrari N.V. (RACE)",
         "What are the key risk factors for Reliance Industries?"
     ]
     for col, ex in zip(eq_cols, examples):
