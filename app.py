@@ -213,78 +213,65 @@ TICKERS = {
 }
 
 # =====================================
-# TICKER RESOLVER (Company Name -> Stock Ticker)
+# SEARCH SUGGESTIONS ENGINE (Company Name -> Stock Tickers List)
 # =====================================
-def resolve_ticker(query):
-    if not query:
-        return "AAPL"
-    
+def get_search_suggestions(query):
+    if not query or len(query.strip()) < 2:
+        return [
+            {"symbol": "MSFT", "name": "Microsoft Corporation"},
+            {"symbol": "NVDA", "name": "NVIDIA Corporation"},
+            {"symbol": "RELIANCE.NS", "name": "Reliance Industries Limited"},
+            {"symbol": "AAPL", "name": "Apple Inc."},
+            {"symbol": "TSLA", "name": "Tesla, Inc."}
+        ]
+        
     query_clean = query.strip()
     
-    # 1. Check if it's already an uppercase ticker symbol
-    if query_clean.isupper() and len(query_clean) <= 12 and re.match(r'^[A-Z0-9.\-]+$', query_clean):
-        return query_clean
-        
-    # 2. Predefined mappings for common user inputs
-    popular_mappings = {
-        "microsoft": "MSFT",
-        "nvidia": "NVDA",
-        "reliance": "RELIANCE.NS",
-        "reliance industries": "RELIANCE.NS",
-        "apple": "AAPL",
-        "google": "GOOGL",
-        "alphabet": "GOOGL",
-        "amazon": "AMZN",
-        "tesla": "TSLA",
-        "meta": "META",
-        "facebook": "META",
-        "netflix": "NFLX",
-        "amd": "AMD",
-        "intel": "INTC",
-        "tata motors": "TATAMOTORS.NS",
-        "tcs": "TCS.NS",
-        "infosys": "INFY",
-        "berkshire": "BRK-B",
-        "berkshire hathaway": "BRK-B"
+    # Pre-populate some exact popular queries to save API call and look polished
+    popular_presets = {
+        "microsoft": [{"symbol": "MSFT", "name": "Microsoft Corporation"}],
+        "nvidia": [{"symbol": "NVDA", "name": "NVIDIA Corporation"}],
+        "reliance": [{"symbol": "RELIANCE.NS", "name": "Reliance Industries Limited"}],
+        "apple": [{"symbol": "AAPL", "name": "Apple Inc."}],
+        "tesla": [{"symbol": "TSLA", "name": "Tesla, Inc."}],
+        "google": [{"symbol": "GOOGL", "name": "Alphabet Inc. (Google)"}],
+        "amazon": [{"symbol": "AMZN", "name": "Amazon.com, Inc."}],
     }
     
-    query_lower = query_clean.lower()
-    if query_lower in popular_mappings:
-        return popular_mappings[query_lower]
-        
-    # Check substring match in popular mappings
-    for name, ticker in popular_mappings.items():
-        if name in query_lower:
-            return ticker
+    if query_clean.lower() in popular_presets:
+        return popular_presets[query_clean.lower()]
 
-    # 3. Dynamic lookup via Yahoo Finance Search API
     import urllib.request
     import urllib.parse
     
+    suggestions = []
     try:
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=3"
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=8"
         req = urllib.request.Request(
             url, 
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         )
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             res_data = json.loads(response.read().decode())
             quotes = res_data.get("quotes", [])
             for q in quotes:
                 symbol = q.get("symbol")
+                name = q.get("shortname") or q.get("longname") or symbol
                 quote_type = q.get("quoteType", "").upper()
-                if symbol and (quote_type == "EQUITY" or quote_type == "ETF" or quote_type == "INDEX"):
-                    return symbol
-            if quotes and quotes[0].get("symbol"):
-                return quotes[0]["symbol"]
+                if symbol and name:
+                    suggestions.append({
+                        "symbol": symbol,
+                        "name": name,
+                        "type": quote_type
+                    })
     except Exception:
         pass
         
-    # 4. If all else fails, convert to uppercase and strip whitespace
-    if " " not in query_clean and len(query_clean) <= 6:
-        return query_clean.upper()
+    # If API fails or yields nothing, return a fallback with the typed query treated as a ticker
+    if not suggestions:
+        suggestions = [{"symbol": query_clean.upper(), "name": f"Query: {query_clean.upper()}"}]
         
-    return query_clean
+    return suggestions
 
 # =====================================
 # GLOBAL FINANCIAL FETCH ENGINE (Any Ticker Worldwide)
@@ -360,14 +347,30 @@ def fetch_global_financials(ticker_symbol):
 # SIDEBAR CONTROLS
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
-company_input = st.sidebar.text_input(
-    "Analyze Any Company", 
+company_search_query = st.sidebar.text_input(
+    "Search Company Name", 
     value="Microsoft", 
-    help="Type any company name (e.g. Microsoft, Nvidia, Reliance, Apple, Tesla) or ticker symbol."
+    help="Type any company name (e.g. Microsoft, Nvidia, Reliance, Ola, Apple, Tesla) or ticker symbol."
 )
 
-# Resolve query to ticker symbol
-global_ticker = resolve_ticker(company_input)
+with st.sidebar.spinner("Searching matching companies..."):
+    suggestions = get_search_suggestions(company_search_query)
+
+dropdown_options = []
+symbol_map = {}
+for s in suggestions:
+    label = f"{s['name']} ({s['symbol']})"
+    dropdown_options.append(label)
+    symbol_map[label] = s['symbol']
+
+selected_label = st.sidebar.selectbox(
+    "Select matching company",
+    options=dropdown_options,
+    index=0,
+    help="Choose the correct company from search results."
+)
+
+global_ticker = symbol_map.get(selected_label, "MSFT")
 
 with st.sidebar.spinner(f"Fetching financials for {global_ticker}..."):
     global_data = fetch_global_financials(global_ticker)
