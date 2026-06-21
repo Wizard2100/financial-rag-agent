@@ -3,8 +3,8 @@ google-genai
 sentence-transformers
 faiss-cpu
 numpy
+pandas
 pypdf
 python-docx
 plotly
 yfinance
-
