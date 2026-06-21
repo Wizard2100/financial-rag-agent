@@ -9,11 +9,13 @@ import re
 import json
 import ast
 import operator
+import time
 
 from collections import Counter
 from sentence_transformers import SentenceTransformer
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 # =====================================
 # PAGE CONFIG
@@ -32,6 +34,60 @@ st.set_page_config(
 client = genai.Client(
     api_key=st.secrets["GEMINI_API_KEY"]
 )
+
+# free-tier daily quotas are tracked per model, so falling back to a second
+# model on 429 gets you a separate bucket instead of just failing
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+
+def extract_retry_seconds(api_error):
+    try:
+        for detail in api_error.details["error"]["details"]:
+            if detail.get("@type", "").endswith("RetryInfo"):
+                return float(detail["retryDelay"].rstrip("s"))
+    except Exception:
+        pass
+    return None
+
+
+def generate_with_fallback(contents, config):
+    last_error = None
+
+    for i, model_name in enumerate(FALLBACK_MODELS):
+        try:
+            return client.models.generate_content(model=model_name, contents=contents, config=config)
+
+        except errors.ClientError as e:
+            last_error = e
+            if e.code != 429:
+                raise
+
+            # first model, short cooldown -> worth one retry before giving up on it
+            wait = extract_retry_seconds(e)
+            if i == 0 and wait and wait <= 30:
+                time.sleep(wait + 1)
+                try:
+                    return client.models.generate_content(model=model_name, contents=contents, config=config)
+                except errors.ClientError as e2:
+                    last_error = e2
+
+    raise last_error
+
+
+def render_api_error(e):
+    if isinstance(e, errors.ClientError) and e.code == 429:
+        wait = extract_retry_seconds(e)
+        wait_text = f" Retry in about {int(wait)}s." if wait else ""
+        st.error(
+            "Hit Gemini's free-tier daily request limit for this project.{} "
+            "Free-tier quotas reset at midnight Pacific time (~12:30 PM IST). "
+            "For uninterrupted demos, enable billing in Google AI Studio - Gemini "
+            "2.5 Flash is inexpensive even under heavy testing.".format(wait_text)
+        )
+    elif isinstance(e, errors.APIError):
+        st.error(f"Gemini API error ({e.status}): {e.message}")
+    else:
+        st.error(f"Error: {str(e)}")
 
 # =====================================
 # LOAD MODELS (cached so reruns don't reload everything from disk)
@@ -262,6 +318,7 @@ AGENT_TOOLS = types.Tool(function_declarations=[
 ])
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def run_agent(query, max_steps=6):
     system_text = (
         "You are an equity research agent covering NVIDIA, Microsoft and Reliance. "
@@ -278,8 +335,7 @@ def run_agent(query, max_steps=6):
 
     for step in range(max_steps):
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_with_fallback(
             contents=contents,
             config=types.GenerateContentConfig(tools=[AGENT_TOOLS], temperature=0.2)
         )
@@ -308,6 +364,92 @@ def run_agent(query, max_steps=6):
         contents.append(types.Content(role="user", parts=response_parts))
 
     return "Hit the tool-call limit without a final answer - try a narrower question.", trace
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def analyze_query(query):
+    query_vector = embedding_model.encode([query]).astype("float32")
+
+    retrieved_chunks = retrieve_context(query, query_vector)
+
+    companies_used = set()
+    context_parts = []
+
+    for i, chunk in enumerate(retrieved_chunks, start=1):
+        if isinstance(chunk, dict):
+            company = chunk.get("company", "Unknown")
+            text = chunk.get("text", "")
+        else:
+            company = "Unknown"
+            text = str(chunk)
+
+        companies_used.add(company)
+        context_parts.append(f"[Source {i} | {company}]\n{text}")
+
+    if not context_parts:
+        return None, "", [], set(), ""
+
+    context = "\n\n".join(context_parts)
+
+    prompt = f"""
+You are a senior equity research analyst. You have been given excerpts from FY25 annual
+reports of NVIDIA, Microsoft and Reliance Industries.
+
+Answer the question using ONLY the context below. Do not invent numbers that aren't present
+in the context.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{query}
+
+Respond with ONLY raw JSON, no markdown fences, in exactly this structure:
+
+{{
+  "summary": "2-4 sentence executive summary answering the question",
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "comparison_table": [
+    {{"metric": "Revenue", "company": "NVIDIA", "value": 130.5, "unit": "USD Billion", "period": "FY25"}}
+  ],
+  "segment_breakdown": [
+    {{"company": "NVIDIA", "segment": "Data Center", "value": 115.2, "unit": "USD Billion"}}
+  ],
+  "risks": ["risk 1", "risk 2"]
+}}
+
+Rules:
+- comparison_table: only include a row if it's backed by an actual number in the context.
+  Use the SAME metric name across companies when they mean the same thing (always "Revenue",
+  never mix it with "Total Revenue" or "Net Sales") so values can be grouped on a chart later.
+  Keep the unit exactly as reported in the source - NVIDIA and Microsoft report in USD,
+  Reliance reports in INR Crore. Never convert currencies, just label "unit" correctly.
+- segment_breakdown: only fill this in if the question is actually about how a company's
+  revenue or business breaks down into parts (segments, geographies, product lines).
+  Otherwise leave it as an empty list.
+- risks: only include items the context actually mentions as risks or concerns. Otherwise
+  leave it as an empty list.
+- If a number isn't directly supported by the context, leave it out rather than estimating it.
+"""
+
+    response = generate_with_fallback(
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.3
+        )
+    )
+
+    raw = response.text.strip()
+    raw = re.sub(r"^```(json)?|```$", "", raw.strip()).strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+
+    return data, response.text, retrieved_chunks, companies_used, context
+
 
 # =====================================
 # HEADER
@@ -353,6 +495,7 @@ with tab1:
         if col.button(example, width='stretch'):
             st.session_state.query_text = example
 
+
     query = st.text_input("Ask a financial question", key="query_text")
 
     if query:
@@ -360,95 +503,18 @@ with tab1:
         try:
 
             with st.spinner("Analyzing reports..."):
+                data, raw_response_text, retrieved_chunks, companies_used, context = analyze_query(query)
 
-                query_vector = embedding_model.encode([query]).astype("float32")
-
-                retrieved_chunks = retrieve_context(query, query_vector)
-
-                companies_used = set()
-                context_parts = []
-
-                for i, chunk in enumerate(retrieved_chunks, start=1):
-                    if isinstance(chunk, dict):
-                        company = chunk.get("company", "Unknown")
-                        text = chunk.get("text", "")
-                    else:
-                        company = "Unknown"
-                        text = str(chunk)
-
-                    companies_used.add(company)
-                    context_parts.append(f"[Source {i} | {company}]\n{text}")
-
-                if not context_parts:
-                    st.error("No relevant information found.")
-                    st.stop()
-
-                context = "\n\n".join(context_parts)
-
-                prompt = f"""
-You are a senior equity research analyst. You have been given excerpts from FY25 annual
-reports of NVIDIA, Microsoft and Reliance Industries.
-
-Answer the question using ONLY the context below. Do not invent numbers that aren't present
-in the context.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{query}
-
-Respond with ONLY raw JSON, no markdown fences, in exactly this structure:
-
-{{
-  "summary": "2-4 sentence executive summary answering the question",
-  "key_findings": ["finding 1", "finding 2", "finding 3"],
-  "comparison_table": [
-    {{"metric": "Revenue", "company": "NVIDIA", "value": 130.5, "unit": "USD Billion", "period": "FY25"}}
-  ],
-  "segment_breakdown": [
-    {{"company": "NVIDIA", "segment": "Data Center", "value": 115.2, "unit": "USD Billion"}}
-  ],
-  "risks": ["risk 1", "risk 2"]
-}}
-
-Rules:
-- comparison_table: only include a row if it's backed by an actual number in the context.
-  Use the SAME metric name across companies when they mean the same thing (always "Revenue",
-  never mix it with "Total Revenue" or "Net Sales") so values can be grouped on a chart later.
-  Keep the unit exactly as reported in the source - NVIDIA and Microsoft report in USD,
-  Reliance reports in INR Crore. Never convert currencies, just label "unit" correctly.
-- segment_breakdown: only fill this in if the question is actually about how a company's
-  revenue or business breaks down into parts (segments, geographies, product lines).
-  Otherwise leave it as an empty list.
-- risks: only include items the context actually mentions as risks or concerns. Otherwise
-  leave it as an empty list.
-- If a number isn't directly supported by the context, leave it out rather than estimating it.
-"""
-
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.3
-                    )
-                )
-
-                raw = response.text.strip()
-                raw = re.sub(r"^```(json)?|```$", "", raw.strip()).strip()
-
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    data = None
+            if not retrieved_chunks:
+                st.error("No relevant information found.")
+                st.stop()
 
             # ---------- answer ----------
 
             if data is None:
                 st.subheader("📊 Financial Analysis")
                 st.warning("Couldn't parse a structured response this time, showing the raw answer instead.")
-                st.write(response.text)
+                st.write(raw_response_text)
 
             else:
                 st.subheader("📊 Financial Analysis")
@@ -573,7 +639,7 @@ Rules:
                     st.bar_chart(theme_df.set_index("Keyword"))
 
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            render_api_error(e)
 
 # =====================================
 # TAB 2 - AGENT MODE (tool use: report search + live market data + calculator)
@@ -639,4 +705,4 @@ with tab2:
             st.markdown(answer)
 
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            render_api_error(e)
