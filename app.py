@@ -1,3 +1,18 @@
+I will read the fully modified version of `app.py` in sections so that I can output the complete, copy-pasteable script for you. Let's retrieve lines 1 to 800 first.
+
+Viewed app.py:1-800
+
+I will read the next section (lines 801 to 1600) of `app.py`.
+
+Viewed app.py:801-1600
+
+I will read the final section (lines 1601 to 2074) of `app.py`.
+
+Viewed app.py:1601-2074
+
+Here is the **complete, fully updated `app.py` code** with the robust error handling, the styled warning/error cards, and the custom Gemini API key input in the sidebar. You can copy the entire block and replace your `app.py` content completely.
+
+```python
 import streamlit as st
 import faiss
 import pickle
@@ -487,6 +502,53 @@ def compute_solvency_scores(ticker_symbol, active_price, active_shares):
         return {"z_score": 2.5, "f_score": 5, "zone": "Grey", "color": "#dfb312", "details": f"Error: {str(e)}"}
 
 # =====================================
+# AI ERROR HANDLING UTILITY
+# =====================================
+def handle_gemini_error(e, context_msg="evaluating query"):
+    error_str = str(e)
+    if "json" in error_str.lower() or "decode" in error_str.lower() or "parse" in error_str.lower():
+        st.markdown(f"""
+        <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
+            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>🔍 Response Parsing Error</h5>
+            <p style='color:#e6edf3; font-size:14px; margin:0;'>
+                The AI response could not be parsed into the expected JSON structure. 
+                Please try re-submitting your query.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    elif "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+        st.markdown(f"""
+        <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
+            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>⚠️ API Rate Limit Exceeded (429)</h5>
+            <p style='color:#e6edf3; font-size:14px; margin:0;'>
+                The Gemini API rate limit has been reached. 
+                If you are using the shared demo key, please wait a few seconds before retrying, or 
+                provide your own Gemini API Key in the sidebar for uninterrupted access.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    elif "api_key" in error_str.lower() or "api key" in error_str.lower() or "invalid key" in error_str.lower() or "400" in error_str or "403" in error_str:
+        st.markdown(f"""
+        <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
+            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>🔑 Invalid API Key Configuration</h5>
+            <p style='color:#e6edf3; font-size:14px; margin:0;'>
+                The provided Gemini API Key appears to be invalid or expired. 
+                Please verify the key in your settings or sidebar.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
+            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>❌ AI Analyst Error</h5>
+            <p style='color:#e6edf3; font-size:14px; margin:0;'>
+                An error occurred while {context_msg}:<br/>
+                <code style='color:#ff7b72; background-color:#161b22; padding:2px 6px; border-radius:4px;'>{error_str}</code>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# =====================================
 # AI SENTIMENT ENGINE (Cached for performance)
 # =====================================
 @st.cache_data(ttl=1800)
@@ -526,14 +588,20 @@ def get_news_sentiment(ticker_symbol, api_key_val):
         return "NEUTRAL"
 
 # =====================================
-# API KEY RESOLUTION (Loaded securely from secrets or environment)
-# =====================================
-api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
-
-# =====================================
 # SIDEBAR CONTROLS
 # =====================================
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
+
+# Custom API Key Input
+user_api_key = st.sidebar.text_input(
+    "Custom Gemini API Key (Optional)", 
+    type="password", 
+    value="",
+    help="Enter your own Gemini API key to avoid shared rate limits. If left blank, the shared demo key will be used."
+)
+system_api_key = st.secrets.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+api_key = user_api_key.strip() if user_api_key.strip() else system_api_key
+
 company_search_query = st.sidebar.text_input(
     "Search Company Name", 
     value="Microsoft", 
@@ -590,9 +658,14 @@ else:
 
 st.sidebar.divider()
 if api_key:
-    st.sidebar.caption("⚡ Gemini API: Connected (Secure Mode)")
+    if user_api_key.strip():
+        st.sidebar.caption("⚡ Gemini API: Connected (Custom Key)")
+    else:
+        st.sidebar.caption("⚡ Gemini API: Connected (Default Key)")
 else:
     st.sidebar.caption("⚠️ Gemini API: Connected (Demo Cache-Only)")
+
+# Old cache definitions removed (moved to top of file)
 
 # =====================================
 # APP LOGIC HEADER
@@ -1054,7 +1127,7 @@ with tab_dup:
                         "Financial Leverage (x)": data["leverage"],
                         "ROE (%)": data["roe"]
                     })
- 
+
     if dup_bench:
         df_dup = pd.DataFrame(dup_bench)
         col_m, col_t, col_l = st.columns(3)
@@ -1460,7 +1533,7 @@ with tab_self_rag:
                             st.markdown("#### 💡 AI Answer:")
                             st.write(resp.text)
                         except Exception as e:
-                            st.error(f"LLM Error: {str(e)}")
+                            handle_gemini_error(e, "evaluating document context")
                 else:
                     st.info("Input a Gemini API Key in the sidebar to get AI-generated answers. Direct matching source chunks are shown below.")
                 
@@ -1798,7 +1871,7 @@ with tab_rag:
                     raw_clean = re.sub(r"^```(json)?|```$", "", raw_resp.strip()).strip()
                     data = json.loads(raw_clean)
                 except Exception as e:
-                    st.error(f"Error executing LLM parser: {str(e)}")
+                    handle_gemini_error(e, "retrieving & parsing annual filings")
                     
         if data:
             st.markdown(f"#### 🔍 Executive Summary")
@@ -2013,3 +2086,4 @@ with tab_cca:
                     st.plotly_chart(fig_football, use_container_width=True)
     else:
         st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
+```
