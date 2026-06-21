@@ -1,4 +1,4 @@
-```python
+
 import streamlit as st
 import faiss
 import pickle
@@ -2072,4 +2072,4 @@ with tab_cca:
                     st.plotly_chart(fig_football, use_container_width=True)
     else:
         st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
-```
+
