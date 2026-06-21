@@ -662,24 +662,37 @@ with tab_port:
                         
                         portfolio_daily = returns.dot(w_vector)
                         
+                        # Resolve single-column dataframes to 1D series
+                        if isinstance(portfolio_daily, pd.DataFrame):
+                            portfolio_daily = portfolio_daily.squeeze()
+                        if isinstance(bench_returns, pd.DataFrame):
+                            bench_daily = bench_returns.squeeze()
+                        else:
+                            bench_daily = bench_returns
+                            
+                        if isinstance(portfolio_daily, pd.DataFrame):
+                            portfolio_daily = portfolio_daily.iloc[:, 0]
+                        if isinstance(bench_daily, pd.DataFrame):
+                            bench_daily = bench_daily.iloc[:, 0]
+                        
                         # Cumulative returns
                         cum_portfolio = (1 + portfolio_daily).cumprod() - 1
-                        cum_benchmark = (1 + bench_returns).cumprod() - 1
+                        cum_benchmark = (1 + bench_daily).cumprod() - 1
                         
                         # Compute performance statistics
-                        ann_return_p = portfolio_daily.mean() * 252 * 100
-                        ann_vol_p = portfolio_daily.std() * np.sqrt(252) * 100
-                        sharpe_p = (ann_return_p - 4.0) / ann_vol_p # Assuming a 4% risk-free rate
+                        ann_return_p = float(portfolio_daily.mean() * 252 * 100)
+                        ann_vol_p = float(portfolio_daily.std() * np.sqrt(252) * 100)
+                        sharpe_p = float((ann_return_p - 4.0) / ann_vol_p) if ann_vol_p > 0 else 0.0
                         
                         cum_returns_plus_one = (1 + portfolio_daily).cumprod()
                         running_max = cum_returns_plus_one.cummax()
                         drawdowns = (cum_returns_plus_one - running_max) / running_max
-                        max_drawdown = drawdowns.min() * 100
+                        max_drawdown = float(drawdowns.min() * 100)
                         
                         # Bench statistics
-                        ann_return_b = bench_returns.mean() * 252 * 100
-                        ann_vol_b = bench_returns.std() * np.sqrt(252) * 100
-                        sharpe_b = (ann_return_b - 4.0) / ann_vol_b
+                        ann_return_b = float(bench_daily.mean() * 252 * 100)
+                        ann_vol_b = float(bench_daily.std() * np.sqrt(252) * 100)
+                        sharpe_b = float((ann_return_b - 4.0) / ann_vol_b) if ann_vol_b > 0 else 0.0
                         
                         # Display metrics side-by-side
                         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
