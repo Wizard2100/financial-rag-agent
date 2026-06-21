@@ -5,3 +5,4 @@ faiss-cpu
 numpy
 pypdf
 python-docx
+plotly
