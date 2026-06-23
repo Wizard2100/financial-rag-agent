@@ -11,7 +11,7 @@ import faiss
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import Transformer, SentenceTransformer
 from pypdf import PdfReader
 from google import genai
 from google.genai import types
@@ -716,9 +716,18 @@ with tab_dup:
             <span style='font-size:42px; font-weight:800; color:#bc8cff;'>{active_data['roe']:.2f}%</span>
         </div>
         <div style='display:flex; justify-content:space-around; text-align:center;'>
-            <div style='flex:1; border-right:1px solid #212836;'><span style='color:#8b949e; font-size:12px;'>Net Profit Margin</span><br/><span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['net_margin']:.2f}%</span></div>
-            <div style='flex:1; border-right:1px solid #212836;'><span style='color:#8b949e; font-size:12px;'>Asset Turnover</span><br/><span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['asset_turnover']:.2f}x</span></div>
-            <div style='flex:1;'><span style='color:#8b949e; font-size:12px;'>Equity Multiplier</span><br/><span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['leverage']:.2f}x</span></div>
+            <div style='flex:1; border-right:1px solid #212836;'>
+                <span style='color:#8b949e; font-size:12px;'>Net Profit Margin</span><br/>
+                <span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['net_margin']:.2f}%</span>
+            </div>
+            <div style='flex:1; border-right:1px solid #212836;'>
+                <span style='color:#8b949e; font-size:12px;'>Asset Turnover</span><br/>
+                <span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['asset_turnover']:.2f}x</span>
+            </div>
+            <div style='flex:1;'>
+                <span style='color:#8b949e; font-size:12px;'>Equity Multiplier</span><br/>
+                <span style='font-size:24px; font-weight:700; color:#58a6ff;'>{active_data['leverage']:.2f}x</span>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -955,6 +964,8 @@ with tab_port:
 
 with tab_self_rag:
     st.markdown("### 📁 Self-Serve RAG: Upload Any Corporate Filing")
+    st.caption("Upload any PDF report (10-K, ESG, Transcript). The platform will chunk, embed, and index it locally in real-time.")
+    
     uploaded_file = st.file_uploader("Upload filing PDF", type=["pdf"])
     
     if uploaded_file:
@@ -1083,6 +1094,19 @@ COMPANY_ALIASES = {"NVIDIA": ["nvidia", "nvda"], "Microsoft": ["microsoft", "msf
 
 with tab_rag:
     st.markdown("### 🔒 Global Reports RAG (Historical + Estimates)")
+    st.caption("Ask questions about any global public company (e.g., Ferrari, Apple, NVIDIA, Ola, etc.). The agent will synthesize baseline filings or live profile/estimates data.")
+    
+    st.markdown("**Try a standard comparison:**")
+    eq_cols = st.columns(3)
+    examples = [
+        "compare revenue and net income across nvidia, microsoft and reliance",
+        "compare the ai strategies of microsoft and nvidia",
+        "what are the key risk factors for reliance industries?"
+    ]
+    for col, ex in zip(eq_cols, examples):
+        if col.button(ex, use_container_width=True, key=f"ex_{ex}"):
+            st.session_state.rag_query_input = ex
+            
     rag_query_input = st.text_input("Ask a financial question", key="rag_query_input")
     
     if rag_query_input:
@@ -1102,7 +1126,8 @@ with tab_rag:
                 with st.spinner("Processing Agent Intelligence..."):
                     try:
                         raw_resp = generate_rag_content(rag_query_input, context)
-                        data = json.loads(re.sub(r"^```(json)?|```$", "", raw_resp.strip()).strip())
+                        # Fixed the string termination regex issue completely here
+                        data = json.loads(re.sub(r"^```json\s*|^```\s*|```$", "", raw_resp.strip()).strip())
                     except Exception as e: st.error(f"Execution fault: {e}")
                         
         if data:
