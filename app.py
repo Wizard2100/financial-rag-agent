@@ -11,7 +11,7 @@ import faiss
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from sentence_transformers import Transformer, SentenceTransformer
+from sentence_transformers import SentenceTransformer
 from pypdf import PdfReader
 from google import genai
 from google.genai import types
@@ -428,7 +428,7 @@ def handle_gemini_error(e, context_msg="evaluating query"):
     else:
         st.markdown(f"""
         <div style='background-color:#2a1b1b; border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:15px;'>
-            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>❌ Analyst Engine Error</h5>
+            <h5 style='color:#ff7b72; margin:0 0 8px 0;'>❌ AI Analyst Error</h5>
             <p style='color:#e6edf3; font-size:14px; margin:0;'>Error {context_msg}: <code>{error_str}</code></p>
         </div>
         """, unsafe_allow_html=True)
@@ -1007,8 +1007,7 @@ with tab_self_rag:
                         prompt = f"Context:\n{ret_context}\n\nQuestion:\n{up_query}\n\nRespond strictly in valid JSON matching a detailed_analysis text key."
                         try:
                             resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2))
-                            data = json.loads(re.sub(r"^```(json)?|
-```$", "", resp.text.strip()).strip())
+                            data = json.loads(resp.text.strip().strip("`").strip("json").strip())
                             st.markdown(data.get("detailed_analysis", ""))
                         except Exception as e:
                             handle_gemini_error(e, "processing framework context")
@@ -1126,8 +1125,11 @@ with tab_rag:
                 with st.spinner("Processing Agent Intelligence..."):
                     try:
                         raw_resp = generate_rag_content(rag_query_input, context)
-                        # Fixed the string termination regex issue completely here
-                        data = json.loads(re.sub(r"^```json\s*|^```\s*|```$", "", raw_resp.strip()).strip())
+                        # Clean JSON processing completely decoupled from unsafe regex routines
+                        clean_text = raw_resp.strip().strip("`").strip()
+                        if clean_text.startswith("json"):
+                            clean_text = clean_text[4:].strip()
+                        data = json.loads(clean_text)
                     except Exception as e: st.error(f"Execution fault: {e}")
                         
         if data:
