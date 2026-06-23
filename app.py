@@ -118,6 +118,16 @@ st.markdown("""
         color: #e6edf3;
     }
     
+    /* Custom Hyperlink Styling - Bold & Inherit Color (No default blue) */
+    a {
+        color: inherit !important;
+        font-weight: bold !important;
+        text-decoration: none !important;
+    }
+    a:hover {
+        text-decoration: underline !important;
+    }
+    
     /* Elegant Title and Header Gradients */
     .main-title {
         font-size: 38px;
