@@ -267,7 +267,6 @@ def get_search_suggestions(query):
     # Method B: Fallback to direct Yahoo Search API
     if not suggestions:
         import urllib.request
-        import urllib.request as urllib2
         import urllib.parse
         try:
             url = f"https://query2.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(query_clean)}&quotesCount=8"
@@ -303,7 +302,7 @@ def fetch_global_financials(ticker_symbol):
         info = ticker.info
         
         name = info.get("longName") or info.get("shortName") or ticker_symbol
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or 0.0
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
         shares = info.get("sharesOutstanding")
         currency = info.get("currency", "$")
         
@@ -344,7 +343,7 @@ def fetch_global_financials(ticker_symbol):
         
         return {
             "name": name,
-            "price": float(price),
+            "price": price,
             "shares": shares / 1e9 if shares else 1.0,
             "currency": currency,
             "revenue": revenue if revenue > 0 else 1.0,
@@ -604,9 +603,9 @@ if hasattr(st, "secrets") and st.secrets:
 api_key = custom_key or secrets_key or os.environ.get("GEMINI_API_KEY", "")
 
 company_search_query = st.sidebar.text_input(
-        "Search Company Name", 
-        value="Microsoft", 
-        help="Type any company name (e.g. Microsoft, Nvidia, Reliance, Ola, Apple, Tesla) or ticker symbol."
+    "Search Company Name", 
+    value="Microsoft", 
+    help="Type any company name (e.g. Microsoft, Nvidia, Reliance, Ola, Apple, Tesla) or ticker symbol."
 )
 
 with st.sidebar.spinner("Searching matching companies..."):
@@ -655,7 +654,7 @@ if global_data:
     </div>
     """, unsafe_allow_html=True)
 else:
-    st.sidebar.warning(f"Could not download financials for '{global_ticker}'. Displaying offline estimates.")
+    st.sidebar.warning(f"Could download financials for '{global_ticker}'. Displaying offline estimates.")
 
 st.sidebar.divider()
 if custom_key:
@@ -748,9 +747,9 @@ with tab_val:
     live_price = active_data["price"]
     
     with col_chart:
-        if live_price is not None:
+        if live_price:
             currency = active_data["currency"]
-            mos = (1 - (live_price / implied_share_value)) * 100 if implied_share_value > 0 else 0
+            mos = (1 - (live_price / implied_share_value)) * 100
             mos_text = f"Margin of Safety: **{mos:.2f}%**" if mos >= 0 else f"Implied Overvaluation: **{abs(mos):.2f}%**"
             mos_color = "#3fb950" if mos >= 0 else "#f85149"
             
@@ -951,12 +950,14 @@ with tab_val:
         p90_path = np.percentile(sim_paths, 90, axis=0)
         
         fig_fan = go.Figure()
+        # Add 90th percentile boundary
         fig_fan.add_trace(go.Scatter(
             x=time_steps, y=p90_path,
             mode='lines',
             line=dict(width=0.5, color='#1f293d'),
             showlegend=False
         ))
+        # Add 10th percentile boundary and fill area between 10th and 90th
         fig_fan.add_trace(go.Scatter(
             x=time_steps, y=p10_path,
             mode='lines',
@@ -965,6 +966,7 @@ with tab_val:
             fillcolor='rgba(88, 166, 255, 0.15)',
             name='10th - 90th Percentile Range'
         ))
+        # Add Mean projection
         fig_fan.add_trace(go.Scatter(
             x=time_steps, y=mean_path,
             mode='lines+markers',
@@ -1412,7 +1414,7 @@ with tab_port:
                         fig_frontier.add_trace(go.Scatter(
                             x=[max_sharpe_vol], y=[max_sharpe_ret],
                             mode='markers', name='Max Sharpe Portfolio',
-                            marker=dict(color='#ff5722', size=14, symbol='star', line=dict(color='white', width=1.5))
+                            marker=dict(color='#ff5722', size=14, star='star', line=dict(color='white', width=1.5))
                         ))
                         
                         fig_frontier.add_trace(go.Scatter(
@@ -1630,39 +1632,140 @@ def retrieve_baseline_chunks(query_vector, target_companies_list=None):
         return [chunks[int(i)] for i in I[0] if 0 <= int(i) < len(chunks)], list(D[0])
 
 def generate_rag_content(query, context):
-    system_prompt = f"Context:\n{context}\n\nQuery:\n{query}\n\nRespond in clean, valid JSON format matching standard summary, key_findings, comparison_table structures."
+    system_prompt = f"""
+You are a senior equity research analyst and investment strategist answering a client's query.
+Use the context excerpts below to answer the query. If numbers for the specific forward periods requested are not explicitly given, calculate them intelligently by utilizing the corporate parameters and growth parameters provided.
+
+CONTEXT EXCERPTS:
+{context}
+
+QUERY:
+{query}
+
+Respond in clean, valid JSON format matching exactly this structure:
+{{
+  "summary": "2-3 sentence executive summary answering the question",
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "comparison_table": [
+    {{"metric": "Revenue", "company": "NVIDIA", "value": 130.5, "unit": "USD Billion", "period": "FY25"}}
+  ],
+  "segment_breakdown": [
+    {{"company": "NVIDIA", "segment": "Data Center", "value": 115.2, "unit": "USD Billion"}}
+  ],
+  "risks": ["risk 1", "risk 2"]
+}}
+"""
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=system_prompt, config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2))
+    response = client.models.generate_content(
+        model="gemini-2.5-flash", 
+        contents=system_prompt, 
+        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
+    )
     return response.text
 
 COMPANY_ALIASES = {"NVIDIA": ["nvidia", "nvda"], "Microsoft": ["microsoft", "msft"], "Reliance": ["reliance", "ril", "jio"]}
 
 with tab_rag:
     st.markdown("### 🔒 Global Reports RAG (Historical + Estimates)")
-    rag_query_input = st.text_input("Ask a financial question", key="master_rag_query")
+    st.caption("Ask questions about any global public company (e.g., Ferrari, Apple, NVIDIA, Ola, etc.). The agent will synthesize baseline filings or live profile/estimates data.")
+    
+    st.markdown("**Try a standard comparison:**")
+    eq_cols = st.columns(3)
+    examples = [
+        "compare revenue and net income across nvidia, microsoft and reliance",
+        "compare the ai strategies of microsoft and nvidia",
+        "what are the key risk factors for reliance industries?"
+    ]
+    for col, ex in zip(eq_cols, examples):
+        if col.button(ex, use_container_width=True, key=f"ex_{ex}"):
+            st.session_state.rag_query_input = ex
+            
+    rag_query_input = st.text_input("Ask a financial question", key="rag_query_input")
     
     if rag_query_input:
         query_hash = hashlib.sha256(rag_query_input.strip().lower().encode()).hexdigest()[:16]
         cache_path = os.path.join(DEMO_CACHE_DIR, f"direct_{query_hash}.json")
         
+        data = None
+        q_vec = embedding_model.encode([rag_query_input]).astype("float32")
+        context, chunks_ret, dists = get_company_context_for_rag(rag_query_input, q_vec, api_key)
+        
         if os.path.exists(cache_path):
             with open(cache_path) as f:
                 data = json.load(f)
-            st.info(data.get("summary", ""))
+            st.caption("📌 Cached response loaded. Zero API quota used.")
         else:
             if not api_key:
-                st.error("Gemini API Key required to process dynamic queries.")
+                st.error("Gemini API Key required to process dynamic queries. Provide it in the sidebar.")
             else:
-                q_vec = embedding_model.encode([rag_query_input]).astype("float32")
-                context, chunks_ret, dists = get_company_context_for_rag(rag_query_input, q_vec, api_key)
                 with st.spinner("Processing Agent Intelligence..."):
                     try:
                         raw_resp = generate_rag_content(rag_query_input, context)
                         raw_clean = re.sub(r"^```(json)?|```$", "", raw_resp.strip()).strip()
                         data = json.loads(raw_clean)
-                        st.info(data.get("summary", "Analysis completed."))
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Parsing Error: {e}")
+                        
+        # RENDER ENGINE: Visual Layout Output Allocation
+        if data:
+            st.markdown(f"#### 🔍 Executive Summary")
+            st.info(data.get("summary", "Analysis completed."))
+            
+            findings = data.get("key_findings") or []
+            if findings:
+                st.markdown("**Key Findings:**")
+                for f in findings:
+                    st.markdown(f"- {f}")
+                    
+            table = data.get("comparison_table") or []
+            if table:
+                df = pd.DataFrame(table)
+                if not df.empty and "value" in df.columns and "metric" in df.columns:
+                    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+                    df = df.dropna(subset=["value"])
+                    df["unit"] = df.get("unit", "").fillna("")
+                    df["metric_label"] = df["metric"] + df["unit"].apply(lambda u: f" ({u})" if u else "")
+                    
+                    st.markdown("#### 📋 Parsed Comparison Data")
+                    pivot = df.pivot_table(index="metric_label", columns="company", values="value", aggfunc="first")
+                    st.dataframe(pivot.style.format("{:,.2f}", na_rep="—"), use_container_width=True)
+                    
+                    fig_cmp = px.bar(df, x="company", y="value", color="company", facet_col="metric_label", text_auto=".2s")
+                    fig_cmp.update_yaxes(matches=None)
+                    fig_cmp.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+                    fig_cmp.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
+                    st.plotly_chart(fig_cmp, use_container_width=True)
+                    
+            segments = data.get("segment_breakdown") or []
+            if segments:
+                df_seg = pd.DataFrame(segments)
+                if not df_seg.empty and "value" in df_seg.columns and "segment" in df_seg.columns:
+                    df_seg["value"] = pd.to_numeric(df_seg["value"], errors="coerce")
+                    st.markdown("#### 🥧 Divisional Revenue Split")
+                    seg_companies = df_seg["company"].unique() if "company" in df_seg.columns else ["Company"]
+                    pie_cols = st.columns(len(seg_companies))
+                    
+                    for p_col, comp in zip(pie_cols, seg_companies):
+                        g = df_seg[df_seg["company"] == comp] if "company" in df_seg.columns else df_seg
+                        fig_pie = px.pie(g, names="segment", values="value", title=f"{comp} Segments", hole=0.3)
+                        fig_pie.update_traces(textinfo="percent+label", showlegend=False)
+                        fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=280)
+                        p_col.plotly_chart(fig_pie, use_container_width=True)
+                        
+            risks = data.get("risks") or []
+            if risks:
+                st.markdown("#### ⚠️ Highlighted Corporate Risks")
+                for r in risks:
+                    st.warning(r)
+
+            st.markdown("#### 📚 Interactive Source Inspector")
+            with st.expander("Inspect Retrieved Report Chunks & Vector Distance Metrics"):
+                for idx, (chunk, dist) in enumerate(zip(chunks_ret, dists), start=1):
+                    comp = chunk.get("company", "Unknown") if isinstance(chunk, dict) else "Unknown"
+                    txt = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
+                    st.markdown(f"**Source {idx} — {comp}** (Vector L2 Distance: `{dist:.4f}`)")
+                    st.text(txt[:600] + "...")
+                    st.divider()
 
 # =====================================
 # TAB 6: COMPARABLE COMPANY ANALYSIS (CCA)
@@ -1753,3 +1856,5 @@ with tab_cca:
                 fig_football.update_layout(title="Valuation Football Field Range Comparison ($)", barmode='overlay', showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"}, height=300)
                 with col_cca_chart:
                     st.plotly_chart(fig_football, use_container_width=True)
+    else:
+        st.info("Click 'Execute Relative Valuation' on the left panel to query peers and compile ranges.")
