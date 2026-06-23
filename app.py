@@ -334,7 +334,11 @@ def compute_solvency_scores(ticker_symbol, active_price, active_shares):
             total_liab = assets_curr * 0.4 if assets_curr else 1e6
             
         ebit_curr = get_val(fin, ["Operating Income", "EBIT", "Operating Income Or Loss"], col_idx=0)
+        ebit_prev = get_val(fin, ["Operating Income", "EBIT", "Operating Income Or Loss"], col_idx=1) if fin.shape[1] > 1 else ebit_curr
+        
         revenue_curr = get_val(fin, ["Total Revenue", "Revenue", "Gross Sales"], col_idx=0)
+        revenue_prev = get_val(fin, ["Total Revenue", "Revenue", "Gross Sales"], col_idx=1) if fin.shape[1] > 1 else revenue_curr
+        
         net_inc_curr = get_val(fin, ["Net Income", "Net Income Common Stockholders"], col_idx=0)
         net_inc_prev = get_val(fin, ["Net Income", "Net Income Common Stockholders"], col_idx=1) if fin.shape[1] > 1 else net_inc_curr
         ocf = get_val(cf, ["Operating Cash Flow", "Cash Flow From Operating Activities", "Total Cash From Operating Activities"], col_idx=0)
@@ -452,7 +456,6 @@ def get_news_sentiment(ticker_symbol, api_key_val):
     except Exception:
         return "NEUTRAL"
 
-# Sidebar controls configuration setup
 st.sidebar.markdown("<h1 style='color:#e6edf3; font-size:20px; font-weight:800;'>🌐 Global Analyzer Settings</h1>", unsafe_allow_html=True)
 
 with st.sidebar.expander("🔑 Custom API Settings (Optional)"):
@@ -525,12 +528,16 @@ active_data = global_data or {
     "roe": 160.0, "net_margin": 25.1, "asset_turnover": 1.1, "leverage": 5.8, "cash": 30.0, "debt": 100.0
 }
 
-# Valuation Model Projection Engine
 with tab_val:
     st.markdown(f"### 📈 Interactive DCF Valuation: {active_data['name']}")
+    st.caption("Projections calculated dynamically based on real-time corporate parameters.")
+    
     col_input, col_chart = st.columns([1, 2])
     
     with col_input:
+        st.markdown(f"**Baseline Financial Inputs for {active_company}:**")
+        st.caption(f"Revenue: **${active_data['revenue']:.2f}B** | Shares: **{active_data['shares']:.2f}B** | Net Cash/Debt: **${active_data['cash'] - active_data['debt']:.2f}B**")
+        
         dcf_rev_growth = st.slider("5-Year Revenue Growth CAGR (%)", 0.0, 100.0, 15.0, step=0.5, key="g_dcf_rg")
         dcf_fcf_margin = st.slider("Target FCF Margin (%)", 1.0, 60.0, active_data["fcf_margin"], step=0.5, key="g_dcf_fcfm")
         dcf_wacc = st.slider("Discount Rate / WACC (%)", 5.0, 20.0, 9.0, step=0.1, key="g_dcf_wacc")
@@ -638,6 +645,12 @@ with tab_val:
     st.session_state["implied_share_value"] = implied_share_value
 
     st.markdown("#### 🎲 Monte Carlo Valuation Simulator")
+    st.caption("Simulates 500 probabilistic growth and margin paths to generate a confidence interval of fair value.")
+    
+    col_mc1, col_mc2 = st.columns(2)
+    mc_growth_std = col_mc1.slider("Revenue Growth Volatility (Std Dev %)", 0.5, 10.0, 2.5, step=0.1, key="mc_gs")
+    mc_margin_std = col_mc2.slider("FCF Margin Volatility (Std Dev %)", 0.5, 10.0, 1.5, step=0.1, key="mc_ms")
+    
     run_mc = st.button("🎲 Run Monte Carlo Simulation", use_container_width=True, key="btn_run_mc")
     
     if run_mc:
@@ -694,7 +707,6 @@ with tab_val:
         col_chart1.plotly_chart(fig_hist, use_container_width=True)
         col_chart2.plotly_chart(fig_fan, use_container_width=True)
 
-# Operational Efficiency & Diagnostics Matrix
 with tab_dup:
     st.markdown(f"### 🕸️ du Pont Profitability Decomposition: {active_data['name']}")
     st.markdown(f"""
@@ -815,7 +827,7 @@ with tab_dup:
         edges = [
             ("ROE", "Margin"), ("ROE", "Turnover"), ("ROE", "Leverage"),
             ("Margin", "NetIncome"), ("Margin", "Rev1"), ("Turnover", "Rev2"),
-            ("Turnover", "Assets1"), ("Beverage", "Assets2"), ("Leverage", "Assets2"), ("Leverage", "Equity")
+            ("Turnover", "Assets1"), ("Leverage", "Assets2"), ("Leverage", "Equity")
         ]
         
         edge_x, edge_y = [], []
@@ -838,7 +850,6 @@ with tab_dup:
     else:
         st.error("No valid company data loaded. Please check the ticker symbols.")
 
-# Modern Portfolio Variance Optimizer Tab
 with tab_port:
     st.markdown("### 📊 Portfolio Optimizer & Historical Backtester")
     port_tickers_input = st.text_input("Enter Ticker Symbols (Comma-separated)", value="NVDA, MSFT, AAPL, GOOG")
@@ -899,7 +910,6 @@ with tab_port:
                         fig_perf.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
                         st.plotly_chart(fig_perf, use_container_width=True)
 
-                        # Efficient Frontier Matrix Loop
                         st.subheader("🕸️ Modern Portfolio Theory: Efficient Frontier")
                         num_portfolios = 1000
                         mean_returns, cov_matrix = returns.mean() * 252, returns.cov() * 252
@@ -925,7 +935,6 @@ with tab_port:
                         cal_y = 4.0 + cal_x * (max_sharpe_ret - 4.0) / max_sharpe_vol
                         fig_frontier.add_trace(go.Scatter(x=cal_x, y=cal_y, mode='lines', name='Capital Allocation Line', line=dict(color='#bc8cff', width=2, dash='dash')))
                         
-                        # Correct trace mapping fix applied here
                         fig_frontier.add_trace(go.Scatter(x=[max_sharpe_vol], y=[max_sharpe_ret], mode='markers', name='Max Sharpe Portfolio', marker=dict(color='#ff5722', size=14, symbol='star', line=dict(color='white', width=1.5))))
                         fig_frontier.add_trace(go.Scatter(x=[min_vol_vol], y=[min_vol_ret], mode='markers', name='Min Volatility Portfolio', marker=dict(color='#4caf50', size=14, symbol='diamond', line=dict(color='white', width=1.5))))
                         fig_frontier.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
@@ -944,7 +953,6 @@ with tab_port:
             fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font={'color': "#e6edf3"})
             st.plotly_chart(fig_pie, use_container_width=True)
 
-# Document Extraction pipeline
 with tab_self_rag:
     st.markdown("### 📁 Self-Serve RAG: Upload Any Corporate Filing")
     uploaded_file = st.file_uploader("Upload filing PDF", type=["pdf"])
@@ -988,16 +996,11 @@ with tab_self_rag:
                         prompt = f"Context:\n{ret_context}\n\nQuestion:\n{up_query}\n\nRespond strictly in valid JSON matching a detailed_analysis text key."
                         try:
                             resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2))
-                            data = json.loads(re.sub(r"^```(json)?|```$", "", resp.text.strip()).strip())
+                            data = json.loads(re.sub(r"^```(json)?|
+```$", "", resp.text.strip()).strip())
                             st.markdown(data.get("detailed_analysis", ""))
                         except Exception as e:
                             handle_gemini_error(e, "processing framework context")
-
-# Strategic Corporate Reports Tab
-def parse_target_companies(query):
-    q = query.lower()
-    targets = [c for c, aliases in COMPANY_ALIASES.items() if any(a in q for a in aliases)]
-    return targets if targets else None
 
 def extract_tickers_via_llm(query, api_key):
     client = genai.Client(api_key=api_key)
@@ -1071,7 +1074,7 @@ def retrieve_baseline_chunks(query_vector, target_companies_list=None):
         return [chunks[int(i)] for i in I[0] if 0 <= int(i) < len(chunks)], list(D[0])
 
 def generate_rag_content(query, context):
-    system_prompt = f"Context Context:\n{context}\n\nClient Query:\n{query}\n\nReturn strictly valid JSON with standard fields matching comparison_table, summary, key_findings, segment_breakdown, and risks."
+    system_prompt = f"Context:\n{context}\n\nClient Query:\n{query}\n\nReturn strictly valid JSON with standard fields matching comparison_table, summary, key_findings, segment_breakdown, and risks."
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(model="gemini-2.5-flash", contents=system_prompt, config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2))
     return response.text
@@ -1151,7 +1154,6 @@ with tab_rag:
                 st.markdown("#### ⚠️ Highlighted Corporate Risks")
                 for r in risks: st.warning(r)
 
-# Relative Benchmarking tab
 with tab_cca:
     st.markdown(f"### 🏟️ Comparable Company Analysis (CCA): {active_data['name']}")
     col_cca_input, col_cca_chart = st.columns([1, 2])
